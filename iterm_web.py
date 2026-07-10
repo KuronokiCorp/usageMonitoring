@@ -74,7 +74,7 @@ def run_job(job: dict) -> dict:
     sessions = iterm_ctl.list_sessions()
     all_flag = target == "__all__"
     targets = iterm_ctl.resolve_targets(sessions, None if all_flag else target, all_flag)
-    decisions, sent = [], 0
+    decisions, sent, resume_times = [], 0, []
     for s in targets:
         verdict = iterm_ai.judge(iterm_ctl.read_contents(s))
         action = verdict["action"]
@@ -83,10 +83,18 @@ def run_job(job: dict) -> dict:
             if submit:
                 iterm_ctl.send_text(s, "", enter=True)
             sent += 1
+        elif action == "wait" and verdict.get("resume_at"):
+            resume_times.append(verdict["resume_at"])
         decisions.append({"index": s.index, "name": s.name, "action": action,
-                          "reason": verdict["reason"], "backend": verdict.get("backend")})
+                          "reason": verdict["reason"], "backend": verdict.get("backend"),
+                          "resume_at": verdict.get("resume_at")})
     brief = ", ".join(f'{d["index"]}:{d["action"]}' for d in decisions) or "no targets"
-    return {"status": f"AI sent {sent}/{len(targets)} ({brief})", "sent": sent, "decisions": decisions}
+    # earliest known reset among sessions we're waiting on -> precise one-shot re-check
+    resume_at = min(resume_times) if resume_times else None
+    status = f"AI sent {sent}/{len(targets)} ({brief})"
+    if resume_at:
+        status += f" · waking at {resume_at}"
+    return {"status": status, "sent": sent, "decisions": decisions, "resume_at": resume_at}
 
 
 # --------------------------------------------------------------------------- #
@@ -175,19 +183,25 @@ def scheduler_loop():
         now = datetime.now().replace(second=0, microsecond=0)
         if now != last_minute:
             last_minute = now
+            now_str = now.strftime("%Y-%m-%d %H:%M")
             jobs = load_jobs()
             changed = False
             for job in jobs:
                 if not job.get("enabled", True):
                     continue
+                # Fire when the cron matches OR a precise one-shot resume is due
+                # (resume_at was set on a prior run when the AI read a reset time).
+                resume_due = job.get("resume_at") and job["resume_at"] <= now_str
                 try:
-                    if cron_match(job["schedule"], now):
+                    if cron_match(job["schedule"], now) or resume_due:
                         result = run_job(job)
-                        job["last_run"] = now.strftime("%Y-%m-%d %H:%M")
+                        job["last_run"] = now_str
                         job["last_status"] = result["status"]
+                        # carry the next precise wake time (or clear it once resumed)
+                        job["resume_at"] = result.get("resume_at")
                         changed = True
                 except Exception as e:  # keep the scheduler alive on any single failure
-                    job["last_run"] = now.strftime("%Y-%m-%d %H:%M")
+                    job["last_run"] = now_str
                     job["last_status"] = f"error: {e}"
                     changed = True
             if changed:
@@ -632,7 +646,7 @@ async function loadJobs(){
       <td class="mono">${j.schedule}</td>
       <td>${targetName.replace(/</g,'&lt;').slice(0,28)}</td>
       <td class="mono">${j.next_run||'—'}</td>
-      <td class="mono">${j.last_run||'—'}<div class="st">${j.last_status||''}</div></td>
+      <td class="mono">${j.last_run||'—'}<div class="st">${j.last_status||''}${j.resume_at?` · ⏰ wake ${j.resume_at}`:''}</div></td>
       <td></td>`;
     const actions = tr.lastElementChild;
     const mk = (label, cls, fn) => { const b=document.createElement('button'); b.className=cls; b.textContent=label; b.onclick=fn; b.style.marginRight='4px'; return b; };

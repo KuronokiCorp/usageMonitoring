@@ -135,6 +135,14 @@ stuck. Each check classifies the screen into:
 - **wait** — hit a usage limit whose reset is still in the future → don't send yet.
 - **skip** — actively working, healthy idle prompt, or waiting on a human → leave alone.
 
+**Precise resume timing.** On a `wait`, the model also reads the reset time shown
+on screen ("resets at 6pm", "try again in 2 hours", "23:00") and returns it. The
+scheduler parses that into an absolute time and sets a **one-shot wake** for that
+moment — so instead of resuming at "the next poll after reset," the job re-checks
+the session right as its limit resets (to the minute) and sends "continue" then.
+If no reset time is shown, it falls back to ordinary polling. The job row shows
+`⏰ wake <time>` while a precise resume is pending.
+
 Two backends, chosen automatically (shown by the header badge):
 
 - **MiniMax** (preferred) — calls MiniMax's OpenAI-compatible endpoint

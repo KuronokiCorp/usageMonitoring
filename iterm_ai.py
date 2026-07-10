@@ -22,6 +22,7 @@ Two backends:
 
 `judge()` never raises — on any error it degrades to the heuristic.
 """
+import datetime as _dt
 import json
 import os
 import re
@@ -46,8 +47,13 @@ resolve.
 
 Prefer "skip" when unsure — a wrong "continue" types into a working agent.
 
+When action is "wait", also read the reset/retry time shown on screen and put it
+verbatim in "reset_time" (e.g. "resets at 5pm" -> "5pm", "try again in 2 hours"
+-> "in 2 hours", "resets 23:00" -> "23:00"). If no reset time is shown, or the
+action is not "wait", set "reset_time" to null.
+
 Respond with ONLY a JSON object, no prose and no markdown fences, of the form:
-{"action": "continue" | "wait" | "skip", "reason": "<one short sentence>"}"""
+{"action": "continue" | "wait" | "skip", "reason": "<one short sentence>", "reset_time": <string or null>}"""
 
 
 # --------------------------------------------------------------------------- #
@@ -90,7 +96,11 @@ def heuristic(contents: str) -> dict:
         return {"action": "skip", "reason": "session appears to be actively working"}
     if _LIMIT_HIT.search(tail):
         if _LIMIT_FUTURE.search(tail):
-            return {"action": "wait", "reason": "usage limit hit with a future reset shown"}
+            m = re.search(r"(?:reset[s]?|try again|back)\s*(?:at|in)?\s*"
+                          r"([0-9][0-9: ]*(?:am|pm)?|in \d+\s*(?:hour|hr|min)\w*)",
+                          tail, re.IGNORECASE)
+            return {"action": "wait", "reason": "usage limit hit with a future reset shown",
+                    "reset_time": (m.group(1).strip() if m else None)}
         return {"action": "continue", "reason": "session hit a usage limit with no pending reset"}
     if _ASKING.search(tail):
         return {"action": "skip", "reason": "session is waiting on a human decision"}
@@ -102,6 +112,57 @@ def heuristic(contents: str) -> dict:
 # --------------------------------------------------------------------------- #
 # MiniMax backend (OpenAI-compatible chat completions over stdlib HTTP)
 # --------------------------------------------------------------------------- #
+def parse_reset_time(text, now=None):
+    """Parse a human reset/retry time into an absolute local datetime, or None.
+
+    Handles: relative ("in 2 hours", "in 45 min", "in 1h30m"), 12-hour clock
+    ("5pm", "11:00 PM"), 24-hour clock ("23:00"), and ISO ("2026-07-10 23:00").
+    A bare clock time already past today rolls to tomorrow.
+    """
+    if not text:
+        return None
+    now = now or _dt.datetime.now()
+    t = str(text).strip().lower()
+
+    # ISO-ish: YYYY-MM-DD HH:MM
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})", t)
+    if m:
+        y, mo, d, h, mi = map(int, m.groups())
+        try:
+            return _dt.datetime(y, mo, d, h, mi)
+        except ValueError:
+            return None
+
+    # Relative: "in 2 hours", "in 45 minutes", "in 1 hour 30 minutes", "in 90m"
+    if "in " in t or re.match(r"^\s*\d+\s*[hm]", t):
+        hours = re.search(r"(\d+)\s*(?:hours?|hrs?|h)\b", t)
+        mins = re.search(r"(\d+)\s*(?:minutes?|mins?|m)\b", t)
+        if hours or mins:
+            delta = _dt.timedelta(hours=int(hours.group(1)) if hours else 0,
+                                  minutes=int(mins.group(1)) if mins else 0)
+            if delta.total_seconds() > 0:
+                return now + delta
+
+    # 12-hour clock: "5pm", "11:00 pm", "3:30 am"
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", t)
+    if m:
+        h = int(m.group(1)) % 12
+        if m.group(3) == "pm":
+            h += 12
+        mi = int(m.group(2) or 0)
+        cand = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        return cand if cand > now else cand + _dt.timedelta(days=1)
+
+    # 24-hour clock: "23:00"
+    m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", t)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        cand = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        return cand if cand > now else cand + _dt.timedelta(days=1)
+
+    return None
+
+
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
@@ -157,24 +218,34 @@ def _minimax(contents: str, model: str) -> dict:
     action = data.get("action", "").lower()
     if action not in ("continue", "wait", "skip"):
         raise ValueError(f"unexpected action {action!r}")
-    return {"action": action, "reason": data.get("reason", "")}
+    return {"action": action, "reason": data.get("reason", ""),
+            "reset_time": data.get("reset_time")}
 
 
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 def judge(contents: str, model: str | None = None) -> dict:
-    """Return {action, reason, backend}. Never raises — falls back to heuristic."""
+    """Return {action, reason, backend, reset_time?, resume_at?}.
+
+    Never raises — falls back to heuristic. When action is "wait" and a reset
+    time was readable, `resume_at` is an absolute "YYYY-MM-DD HH:MM" local time
+    for a precise one-shot re-check.
+    """
     model = model or DEFAULT_MODEL
     try:
         result = _minimax(contents, model)
         result["backend"] = f"minimax:{model}"
-        return result
     except Exception as e:  # missing key, network, HTTP, parse, etc.
-        r = heuristic(contents)
+        result = heuristic(contents)
         detail = "no MINIMAX_API_KEY" if "MINIMAX_API_KEY" in str(e) else type(e).__name__
-        r["backend"] = f"heuristic ({detail})"
-        return r
+        result["backend"] = f"heuristic ({detail})"
+
+    if result.get("action") == "wait":
+        dt = parse_reset_time(result.get("reset_time"))
+        if dt:
+            result["resume_at"] = dt.strftime("%Y-%m-%d %H:%M")
+    return result
 
 
 def health() -> dict:
