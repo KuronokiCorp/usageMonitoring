@@ -118,8 +118,9 @@ Bound to `127.0.0.1` only (local, no auth). Three panels:
 
 ### Registering scheduled jobs
 
-Give a job a name, one or more target sessions (⌘/Ctrl-click for several — one
-job is created per session), a message, and a 5-field cron expression
+Give a job a name, **tick one or more target sessions** (a checkbox list — one
+job is created per ticked session, or tick "ALL sessions" for a single
+all-sessions job), a message, and a 5-field cron expression
 (`min hour day month weekday`), with preset buttons (every 5 min, hourly, daily
 9am, weekdays 9am…). Jobs show their next/last run and can be run-now, paused, or
 deleted. Targets are stored by **session UUID**, so a job keeps hitting the right
@@ -131,6 +132,13 @@ current minute, and fires the matches. Jobs persist to `iterm_jobs.json` and
 survive restarts, but **only fire while the server is running** — this is
 deliberate, because driving iTerm needs the automation permission the server
 inherits from your terminal, which a plain system `crontab` usually lacks.
+
+### Activity log
+
+The admin's **Activity log** panel shows a live feed of what the tool does —
+manual sends, AI-check decisions, cron fires (with which sessions were hit),
+job registrations, and errors — each timestamped and colour-coded. It's persisted
+to `activity.log` so history survives a restart, and served at `GET /api/logs`.
 
 ---
 

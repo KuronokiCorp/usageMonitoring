@@ -19,6 +19,7 @@ Usage:
     ./iterm_web.py --open          # also open the page in your browser
 """
 import argparse
+import collections
 import json
 import os
 import threading
@@ -33,8 +34,44 @@ import iterm_ai
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 JOBS_FILE = os.path.join(HERE, "iterm_jobs.json")
+ACTIVITY_FILE = os.path.join(HERE, "activity.log")
 
 _jobs_lock = threading.Lock()
+
+
+# --------------------------------------------------------------------------- #
+# Activity log (in-memory ring buffer + append-only file)
+# --------------------------------------------------------------------------- #
+_log = collections.deque(maxlen=1000)
+_log_lock = threading.Lock()
+
+
+def log_event(kind: str, message: str) -> dict:
+    """Record an activity-log entry (shown in the admin's Activity panel)."""
+    entry = {"t": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "message": message}
+    with _log_lock:
+        _log.append(entry)
+        try:
+            with open(ACTIVITY_FILE, "a") as f:
+                f.write(f'{entry["t"]}\t{kind}\t{message}\n')
+        except OSError:
+            pass
+    return entry
+
+
+def load_recent_log():
+    """Seed the ring buffer from the log file so history survives a restart."""
+    if not os.path.exists(ACTIVITY_FILE):
+        return
+    try:
+        with open(ACTIVITY_FILE) as f:
+            lines = f.read().splitlines()[-1000:]
+    except OSError:
+        return
+    for ln in lines:
+        parts = ln.split("\t", 2)
+        if len(parts) == 3:
+            _log.append({"t": parts[0], "kind": parts[1], "message": parts[2]})
 
 
 # --------------------------------------------------------------------------- #
@@ -67,8 +104,11 @@ def run_job(job: dict) -> dict:
     target = job["target"]
     command = job["command"]
     submit = job.get("submit", False)
+    name = job.get("name", "job")
     if not job.get("ai_check", False):
         hits = do_send(target, command, submit)
+        who = ", ".join(h["index"] for h in hits) or "no match"
+        log_event("send", f'job "{name}" ({target}) → sent {command!r} to {len(hits)} session(s): {who}')
         return {"status": f"sent to {len(hits)} session(s)", "sent": len(hits)}
 
     sessions = iterm_ctl.list_sessions()
@@ -94,6 +134,7 @@ def run_job(job: dict) -> dict:
     status = f"AI sent {sent}/{len(targets)} ({brief})"
     if resume_at:
         status += f" · waking at {resume_at}"
+    log_event("ai", f'job "{name}" ({target}) → {status}')
     return {"status": status, "sent": sent, "decisions": decisions, "resume_at": resume_at}
 
 
@@ -203,6 +244,7 @@ def scheduler_loop():
                 except Exception as e:  # keep the scheduler alive on any single failure
                     job["last_run"] = now_str
                     job["last_status"] = f"error: {e}"
+                    log_event("error", f'job "{job.get("name","job")}": {e}')
                     changed = True
             if changed:
                 save_jobs(jobs)
@@ -257,6 +299,9 @@ class Handler(BaseHTTPRequestHandler):
             ])
         if self.path == "/api/ai/health":
             return self._json(iterm_ai.health())
+        if self.path.startswith("/api/logs"):
+            with _log_lock:
+                return self._json(list(_log))
         if self.path == "/api/jobs":
             jobs = load_jobs()
             now = datetime.now()
@@ -279,7 +324,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 hits = do_send(target, command, submit)
             except Exception as e:
+                log_event("error", f'send to {target}: {e}')
                 return self._json({"error": str(e)}, 500)
+            who = ", ".join(h["index"] for h in hits) or "no match"
+            log_event("send", f'manual → sent {command!r} to {len(hits)} session(s): {who}')
             return self._json({"sent": hits})
 
         if self.path == "/api/read":
@@ -315,6 +363,8 @@ class Handler(BaseHTTPRequestHandler):
                 "last_status": None,
             })
             save_jobs(jobs)
+            log_event("job", f'registered "{body["name"].strip()}" → {body["target"].strip()} @ {body["schedule"].strip()}'
+                             + (" [AI]" if body.get("ai_check") else ""))
             return self._json({"ok": True})
 
         if self.path == "/api/jobs/create_bulk":
@@ -345,6 +395,9 @@ class Handler(BaseHTTPRequestHandler):
             jobs = load_jobs()
             jobs.extend(new_entries)
             save_jobs(jobs)
+            for e in new_entries:
+                log_event("job", f'registered "{e["name"]}" → {e["target"]} @ {e["schedule"]}'
+                                 + (" [AI]" if e.get("ai_check") else ""))
             return self._json({"ok": True, "created": len(new_entries)})
 
         if self.path == "/api/jobs/toggle":
@@ -383,8 +436,11 @@ class Handler(BaseHTTPRequestHandler):
                 for s in targets:
                     v = iterm_ai.judge(iterm_ctl.read_contents(s))
                     out.append({"index": s.index, "name": s.name, **v})
+                brief = ", ".join(f'{d["index"]}:{d["action"]}' for d in out)
+                log_event("ai-check", f'checked {len(out)} session(s): {brief}')
                 return self._json({"decisions": out})
             except Exception as e:
+                log_event("error", f'ai-check {target}: {e}')
                 return self._json({"error": str(e)}, 500)
 
         return self._json({"error": "not found"}, 404)
@@ -483,8 +539,8 @@ PAGE = r"""<!doctype html>
         <input id="jobName" placeholder="e.g. hourly continue">
       </div>
       <div>
-        <label>Target session(s) — ⌘/Ctrl-click for multiple</label>
-        <select id="jobTargets" multiple size="6"></select>
+        <label>Target session(s) — tick each one you want</label>
+        <div id="jobTargets" style="max-height:150px;overflow:auto;border:1px solid #2a2f3a;border-radius:6px;padding:6px 8px;background:#0f1319"></div>
       </div>
       <div>
         <label>Schedule (cron: min hour dom mon dow)</label>
@@ -517,6 +573,16 @@ PAGE = r"""<!doctype html>
       <tbody id="jobs"></tbody></table>
     <div class="muted" style="margin-top:8px">Jobs fire only while this server is running.</div>
   </section>
+
+  <!-- Activity log -->
+  <section class="card full">
+    <h2>Activity log
+      <button class="ghost" onclick="loadLogs()">refresh</button>
+      <label class="muted" style="margin-left:8px"><input type="checkbox" id="logAuto" checked style="width:auto"> auto</label>
+    </h2>
+    <pre id="logView" style="max-height:280px;overflow:auto;margin:0;padding:8px;background:#0f1319;border:1px solid #2a2f3a;border-radius:6px;font-size:12px;white-space:pre-wrap"></pre>
+    <div class="muted" style="margin-top:6px">Sends, AI decisions, cron fires and errors. Persisted to <code>activity.log</code>.</div>
+  </section>
 </main>
 
 <script>
@@ -541,6 +607,27 @@ function targetOptions(){
   return html;
 }
 
+// Job targets are checkboxes (click to toggle — no ⌘-click needed).
+function jobCheckedValues(){
+  return [...document.querySelectorAll('#jobTargets input:checked')].map(b=>b.value);
+}
+function renderJobTargets(keep){
+  const box = $('jobTargets');
+  const row = (val, text, cls='') => {
+    const checked = keep.includes(val) ? 'checked' : '';
+    return `<label style="display:flex;gap:8px;align-items:center;padding:2px 0;cursor:pointer" class="${cls}">
+      <input type="checkbox" value="${val}" data-label="${text.replace(/"/g,'')}" style="width:auto" ${checked}>
+      <span>${text.replace(/</g,'&lt;')}</span></label>`;
+  };
+  let html = row('__all__', 'ALL sessions', 'jt-all');
+  for(const s of SESSIONS) html += row('id:'+s.id, `${s.index}  ${s.job||''}  ${s.name}`);
+  box.innerHTML = html;
+  // "ALL sessions" is exclusive: ticking it clears the rest and vice-versa
+  const all = box.querySelector('.jt-all input');
+  all.onchange = () => { if(all.checked) box.querySelectorAll('input:not(:checked)').forEach(()=>{}), box.querySelectorAll('label:not(.jt-all) input').forEach(cb=>cb.checked=false); };
+  box.querySelectorAll('label:not(.jt-all) input').forEach(cb => cb.onchange = () => { if(cb.checked) all.checked=false; });
+}
+
 async function loadSessions(){
   SESSIONS = await api('/api/sessions');
   if(SESSIONS.error){ return; }
@@ -554,16 +641,16 @@ async function loadSessions(){
       <td><button class="ghost" data-id="id:${s.id}">use</button></td>`;
     tr.querySelector('button').onclick = () => {
       $('sendTarget').value = 'id:'+s.id;
-      for(const o of $('jobTargets').options){ if(o.value==='id:'+s.id) o.selected = true; }
+      const cb = document.querySelector(`#jobTargets input[value="id:${s.id}"]`);
+      if(cb){ cb.checked = true; cb.dispatchEvent(new Event('change')); }
     };
     tb.appendChild(tr);
   }
   const keepSend = $('sendTarget').value;
-  const keepJob = [...$('jobTargets').selectedOptions].map(o=>o.value);
+  const keepJob = jobCheckedValues();
   $('sendTarget').innerHTML = targetOptions();
-  $('jobTargets').innerHTML = targetOptions();
   if(keepSend) $('sendTarget').value = keepSend;
-  for(const o of $('jobTargets').options){ if(keepJob.includes(o.value)) o.selected = true; }
+  renderJobTargets(keepJob);
 }
 
 function show(id, obj){
@@ -615,12 +702,13 @@ async function loadHealth(){
 function setCron(v){ $('jobSchedule').value = v; }
 
 async function createJob(){
-  const picked = [...$('jobTargets').selectedOptions].map(o=>({value:o.value, label:o.textContent}));
+  const boxes = [...document.querySelectorAll('#jobTargets input:checked')];
+  const picked = boxes.map(b=>({value:b.value, label:b.dataset.label||b.value}));
   const el = $('jobResult');
-  if(!picked.length){ el.className='result err'; el.textContent='Pick at least one target session.'; return; }
+  if(!picked.length){ el.className='result err'; el.textContent='Tick at least one target session.'; return; }
   const baseName = $('jobName').value.trim();
   if(!baseName){ el.className='result err'; el.textContent='Job name is required.'; return; }
-  // If "ALL sessions" is among the picks, collapse to a single __all__ job.
+  // If "ALL sessions" is ticked, collapse to a single __all__ job.
   const hasAll = picked.some(p=>p.value==='__all__');
   const targets = hasAll ? [{value:'__all__', label:'ALL sessions'}] : picked;
   const multi = targets.length > 1;
@@ -629,8 +717,11 @@ async function createJob(){
     target: t.value, command:$('jobCmd').value,
     schedule:$('jobSchedule').value, submit:$('jobSubmit').checked, ai_check:$('jobAi').checked}));
   const r = await api('/api/jobs/create_bulk', {jobs});
-  if(r.ok){ el.className='result ok'; el.textContent=`Registered ${r.created} job(s).`;
-    $('jobName').value=''; $('jobCmd').value=''; loadJobs(); }
+  if(r.ok){ el.className='result ok';
+    el.textContent = `Registered ${r.created} job(s) for: ` + targets.map(t=>t.label.trim().split(/\s+/)[0]).join(', ');
+    $('jobName').value=''; $('jobCmd').value='';
+    document.querySelectorAll('#jobTargets input:checked').forEach(cb=>cb.checked=false);
+    loadJobs(); }
   else { el.className='result err'; el.textContent='Error: '+(r.error||'failed'); }
 }
 
@@ -657,10 +748,26 @@ async function loadJobs(){
   }
 }
 
+const LOG_COLORS = {send:'#9cc4ff', ai:'#c8a8ff', 'ai-check':'#c8a8ff', job:'#9ff0c0', error:'#ffb0b0'};
+async function loadLogs(){
+  const logs = await api('/api/logs');
+  const el = $('logView');
+  if(!Array.isArray(logs)){ return; }
+  if(!logs.length){ el.textContent = '(no activity yet)'; return; }
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.innerHTML = logs.map(e => {
+    const c = LOG_COLORS[e.kind] || '#8b93a7';
+    const kind = (e.kind||'').padEnd(9);
+    return `<span style="color:#6b7280">${e.t}</span>  <span style="color:${c}">${kind}</span>  ${(e.message||'').replace(/</g,'&lt;')}`;
+  }).join('\n');
+  if($('logAuto').checked && nearBottom) el.scrollTop = el.scrollHeight;
+}
+
 loadSessions().then(loadJobs);
-loadHealth();
+loadHealth(); loadLogs();
 setInterval(loadSessions, 5000);
 setInterval(loadJobs, 15000);
+setInterval(() => { if($('logAuto').checked) loadLogs(); }, 4000);
 setInterval(loadHealth, 30000);
 </script>
 </body></html>
@@ -675,6 +782,8 @@ def main():
     ap.add_argument("--open", action="store_true", help="open the page in a browser")
     args = ap.parse_args()
 
+    load_recent_log()
+    log_event("server", f"admin started on {args.host}:{args.port} · AI backend {iterm_ai.health()['backend']}")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"

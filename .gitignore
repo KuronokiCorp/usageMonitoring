@@ -3,6 +3,7 @@
 
 # Runtime state
 iterm_jobs.json
+activity.log
 
 # Node
 node_modules/
