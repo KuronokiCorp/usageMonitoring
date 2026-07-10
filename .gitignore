@@ -4,6 +4,10 @@
 # Runtime state
 iterm_jobs.json
 
+# Node
+node_modules/
+npm-debug.log*
+
 # Python
 __pycache__/
 *.pyc

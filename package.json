@@ -1,0 +1,40 @@
+{
+  "name": "iterm-usage-monitor",
+  "version": "1.0.0",
+  "description": "Monitor and control iTerm2 sessions from a local web admin, with AI auto-continue (MiniMax) that resumes rate-limited/idle sessions.",
+  "scripts": {
+    "start": "bash start.sh",
+    "start:open": "bash start.sh --open",
+    "web": "bash start.sh",
+    "list": "python3 iterm_ctl.py list",
+    "watch": "python3 iterm_ctl.py watch",
+    "send": "python3 iterm_ctl.py send",
+    "read": "python3 iterm_ctl.py read",
+    "ai": "python3 iterm_ai.py"
+  },
+  "bin": {
+    "iterm-ctl": "iterm_ctl.py"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KuronokiCorp/usageMonitoring.git"
+  },
+  "keywords": [
+    "iterm2",
+    "iterm",
+    "terminal",
+    "automation",
+    "claude-code",
+    "minimax",
+    "monitoring",
+    "cron"
+  ],
+  "license": "MIT",
+  "private": true
+}

@@ -41,30 +41,38 @@ limits and interruptions — but works with any iTerm2 session.
 ## Quick start
 
 ```bash
-git clone <your-repo-url> iterm-monitor
-cd iterm-monitor
+git clone https://github.com/KuronokiCorp/usageMonitoring.git
+cd usageMonitoring
 
-# CLI
-./iterm_ctl.py list
+# configure the AI backend (optional — falls back to a rule-based check without it)
+cp .env.example .env       # then add your MiniMax key
 
-# Web admin (loads .env if present)
-cp .env.example .env      # add your MiniMax key (optional)
-./start.sh --open         # serves http://127.0.0.1:8765
+# launch the web admin (loads .env)
+npm start                  # serves http://127.0.0.1:8765
+npm run start:open         # …and opens it in your browser
+
+# or use the CLI
+npm run list
 ```
 
-The first command may trigger a one-time macOS prompt to allow controlling
-iTerm2 — approve it.
+> There are **no npm dependencies to install** — the scripts just wrap the Python
+> tool, so `npm start` works straight after clone (Node 16+ and Python 3.10+).
+
+The first run may trigger a one-time macOS prompt to allow controlling iTerm2 —
+approve it.
 
 ---
 
-## The CLI — `iterm_ctl.py`
+## The CLI
+
+Run via npm (pass CLI args after `--`):
 
 ```bash
-./iterm_ctl.py list                        # snapshot of all sessions
-./iterm_ctl.py read 3.1.1                   # print a session's visible screen
-./iterm_ctl.py send 3.1.1 "git status"      # run a command in one session
-./iterm_ctl.py send --all "pwd"             # run in every session (asks y/N)
-./iterm_ctl.py watch --interval 2           # live monitor (Ctrl-C to stop)
+npm run list                               # snapshot of all sessions
+npm run watch                              # live monitor (Ctrl-C to stop)
+npm run read -- 3.1.1                       # print a session's visible screen
+npm run send -- 3.1.1 "git status"          # run a command in one session
+npm run send -- --all "pwd"                 # run in every session (asks y/N)
 ```
 
 ### Targeting a session
@@ -91,11 +99,12 @@ iTerm2 — approve it.
 
 ---
 
-## The web admin — `iterm_web.py`
+## The web admin
 
 ```bash
-./start.sh --open            # http://127.0.0.1:8765, loads .env
-./start.sh --port 9000       # custom port
+npm start                    # http://127.0.0.1:8765, loads .env
+npm run start:open           # …and opens the browser
+npm start -- --port 9000     # custom port
 ```
 
 Bound to `127.0.0.1` only (local, no auth). Three panels:
@@ -157,7 +166,7 @@ Two backends, chosen automatically (shown by the header badge):
 Test either backend without sending anything via the **AI check** button, or:
 
 ```bash
-echo "You've hit your usage limit.\n❯ " | ./iterm_ai.py     # prints the verdict
+echo "You've hit your usage limit.\n❯ " | npm run ai --silent   # prints the verdict
 ```
 
 ---
@@ -175,7 +184,7 @@ The web server reads these environment variables (via `.env`, loaded by
 
 ```bash
 cp .env.example .env      # then edit .env with your key
-./start.sh --open
+npm run start:open
 ```
 
 `.env` is **gitignored** — do not commit your key. If you'd rather not keep it on
