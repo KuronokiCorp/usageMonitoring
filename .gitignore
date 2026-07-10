@@ -1,0 +1,14 @@
+# Secrets — never commit your real API key
+.env
+
+# Runtime state
+iterm_jobs.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
