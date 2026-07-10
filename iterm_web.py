@@ -619,7 +619,7 @@ function renderJobTargets(keep){
       <input type="checkbox" value="${val}" data-label="${text.replace(/"/g,'')}" style="width:auto" ${checked}>
       <span>${text.replace(/</g,'&lt;')}</span></label>`;
   };
-  let html = row('__all__', 'ALL sessions', 'jt-all');
+  let html = row('__all__', 'ALL sessions (one job per session)', 'jt-all');
   for(const s of SESSIONS) html += row('id:'+s.id, `${s.index}  ${s.job||''}  ${s.name}`);
   box.innerHTML = html;
   // "ALL sessions" is exclusive: ticking it clears the rest and vice-versa
@@ -708,9 +708,13 @@ async function createJob(){
   if(!picked.length){ el.className='result err'; el.textContent='Tick at least one target session.'; return; }
   const baseName = $('jobName').value.trim();
   if(!baseName){ el.className='result err'; el.textContent='Job name is required.'; return; }
-  // If "ALL sessions" is ticked, collapse to a single __all__ job.
+  // "ALL sessions" expands to one job per current session (individually
+  // manageable), rather than a single opaque __all__ job.
   const hasAll = picked.some(p=>p.value==='__all__');
-  const targets = hasAll ? [{value:'__all__', label:'ALL sessions'}] : picked;
+  const targets = hasAll
+    ? SESSIONS.map(s => ({value:'id:'+s.id, label:`${s.index}  ${s.job||''}  ${s.name}`}))
+    : picked;
+  if(!targets.length){ el.className='result err'; el.textContent='No sessions to target.'; return; }
   const multi = targets.length > 1;
   const jobs = targets.map(t => ({
     name: multi ? `${baseName} — ${t.label.trim().slice(0,24)}` : baseName,

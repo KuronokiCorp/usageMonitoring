@@ -119,8 +119,9 @@ Bound to `127.0.0.1` only (local, no auth). Three panels:
 ### Registering scheduled jobs
 
 Give a job a name, **tick one or more target sessions** (a checkbox list — one
-job is created per ticked session, or tick "ALL sessions" for a single
-all-sessions job), a message, and a 5-field cron expression
+job is created per ticked session; ticking **"ALL sessions"** expands to one job
+per current session so each is individually pauseable/deletable), a message, and
+a 5-field cron expression
 (`min hour day month weekday`), with preset buttons (every 5 min, hourly, daily
 9am, weekdays 9am…). Jobs show their next/last run and can be run-now, paused, or
 deleted. Targets are stored by **session UUID**, so a job keeps hitting the right
