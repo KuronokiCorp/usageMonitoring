@@ -10,7 +10,8 @@
     "watch": "python3 iterm_ctl.py watch",
     "send": "python3 iterm_ctl.py send",
     "read": "python3 iterm_ctl.py read",
-    "ai": "python3 iterm_ai.py"
+    "ai": "python3 iterm_ai.py",
+    "publish:npm": "bash -c 'set -a; . ./.env 2>/dev/null; set +a; npm publish \"--//registry.npmjs.org/:_authToken=$NPM_TOKEN\"'"
   },
   "bin": {
     "iterm-ctl": "iterm_ctl.py",

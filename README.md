@@ -1,8 +1,13 @@
 # iTerm2 Session Monitor & Controller
 
+[![npm](https://img.shields.io/npm/v/iterm-usage-monitor)](https://www.npmjs.com/package/iterm-usage-monitor)
+
 Monitor every running **iTerm2** session from one place, send commands to any of
 them, and schedule recurring "continue" nudges that an AI only fires when a
 session actually looks stuck.
+
+> **Published on npm** as [`iterm-usage-monitor`](https://www.npmjs.com/package/iterm-usage-monitor):
+> `npm install -g iterm-usage-monitor` (macOS · needs Python 3.10+ & iTerm2).
 
 Built for keeping long-running CLI agents (e.g. Claude Code) alive across usage
 limits and interruptions — but works with any iTerm2 session.
@@ -247,6 +252,23 @@ cron tick → read session screen → MiniMax: continue/wait/skip
 | `start.sh`       | Launches the web server with `.env` loaded             |
 | `.env.example`   | Config template — copy to `.env`                       |
 | `iterm_jobs.json`| Saved scheduled jobs (created at runtime, gitignored)  |
+
+---
+
+## Publishing (maintainers)
+
+Published to npm as [`iterm-usage-monitor`](https://www.npmjs.com/package/iterm-usage-monitor).
+Publishing requires an npm **Automation** token (bypasses 2FA) in `.env` as
+`NPM_TOKEN`. To release a new version:
+
+```bash
+# 1. bump "version" in package.json
+# 2. publish (reads NPM_TOKEN from .env)
+npm run publish:npm
+```
+
+`npm pack --dry-run` lists exactly what ships — the `files` allowlist in
+`package.json` ensures `.env`, `activity.log`, and `iterm_jobs.json` never do.
 
 ---
 
