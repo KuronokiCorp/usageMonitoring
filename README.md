@@ -33,8 +33,14 @@ limits and interruptions — but works with any iTerm2 session.
 ## Requirements
 
 - macOS with **iTerm2** installed and running
-- **Python 3.10+**
+- **Python 3.10+** — the actual engine
+- **Node.js 16+** — only to run the `npm` scripts (task runner)
 - (Optional) a **MiniMax API key** for the AI auto-continue backend
+
+> **No `npm install` and no `npm login` needed.** The project has zero npm
+> dependencies and is not published to the npm registry — `npm` is only a task
+> runner that shells out to the Python tool. `npm start` works straight after
+> clone.
 
 ---
 
@@ -55,8 +61,8 @@ npm run start:open         # …and opens it in your browser
 npm run list
 ```
 
-> There are **no npm dependencies to install** — the scripts just wrap the Python
-> tool, so `npm start` works straight after clone (Node 16+ and Python 3.10+).
+> `npm start` works straight after clone — **no `npm install` required** (zero
+> dependencies). Requires Node 16+ and Python 3.10+.
 
 The first run may trigger a one-time macOS prompt to allow controlling iTerm2 —
 approve it.
