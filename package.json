@@ -1,5 +1,5 @@
 {
-  "name": "iterm-usage-monitor",
+  "name": "itermon",
   "version": "1.0.0",
   "description": "Monitor and control iTerm2 sessions from a local web admin, with AI auto-continue (MiniMax) that resumes rate-limited/idle sessions.",
   "scripts": {

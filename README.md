@@ -1,13 +1,13 @@
 # iTerm2 Session Monitor & Controller
 
-[![npm](https://img.shields.io/npm/v/iterm-usage-monitor)](https://www.npmjs.com/package/iterm-usage-monitor)
+[![npm](https://img.shields.io/npm/v/itermon)](https://www.npmjs.com/package/itermon)
 
 Monitor every running **iTerm2** session from one place, send commands to any of
 them, and schedule recurring "continue" nudges that an AI only fires when a
 session actually looks stuck.
 
-> **Published on npm** as [`iterm-usage-monitor`](https://www.npmjs.com/package/iterm-usage-monitor):
-> `npm install -g iterm-usage-monitor` (macOS · needs Python 3.10+ & iTerm2).
+> **Published on npm** as [`itermon`](https://www.npmjs.com/package/itermon):
+> `npm install -g itermon` (macOS · needs Python 3.10+ & iTerm2).
 
 Built for keeping long-running CLI agents (e.g. Claude Code) alive across usage
 limits and interruptions — but works with any iTerm2 session.
@@ -49,7 +49,7 @@ limits and interruptions — but works with any iTerm2 session.
 ### Install from npm (global)
 
 ```bash
-npm install -g iterm-usage-monitor
+npm install -g itermon
 iterm-admin --open      # launch the web admin
 iterm-ctl list          # the CLI
 ```
@@ -257,7 +257,7 @@ cron tick → read session screen → MiniMax: continue/wait/skip
 
 ## Publishing (maintainers)
 
-Published to npm as [`iterm-usage-monitor`](https://www.npmjs.com/package/iterm-usage-monitor).
+Published to npm as [`itermon`](https://www.npmjs.com/package/itermon).
 Publishing requires an npm **Automation** token (bypasses 2FA) in `.env` as
 `NPM_TOKEN`. To release a new version:
 
