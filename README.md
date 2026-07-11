@@ -17,6 +17,12 @@ limits and interruptions — but works with any iTerm2 session.
 - **No iTerm2 setup** — uses AppleScript, so the Python API and its preferences
   are not required (macOS will prompt once to allow automation; approve it)
 
+![itermon web admin — sessions, send panel, cron scheduler, AI auto-continue, and activity log](docs/admin.png)
+
+<sub>The web admin: live session list, send panel, cron scheduler with per-session
+AI-gated "continue" jobs (note the ⏰ wake time on a rate-limited session), and a
+live activity log. Screenshot uses demo data.</sub>
+
 ---
 
 ## Features
