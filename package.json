@@ -13,8 +13,18 @@
     "ai": "python3 iterm_ai.py"
   },
   "bin": {
-    "iterm-ctl": "iterm_ctl.py"
+    "iterm-ctl": "iterm_ctl.py",
+    "iterm-admin": "start.sh"
   },
+  "files": [
+    "iterm_ctl.py",
+    "iterm_web.py",
+    "iterm_ai.py",
+    "start.sh",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=16"
   },
@@ -35,6 +45,5 @@
     "monitoring",
     "cron"
   ],
-  "license": "MIT",
-  "private": true
+  "license": "MIT"
 }

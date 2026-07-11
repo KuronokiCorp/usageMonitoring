@@ -37,10 +37,20 @@ limits and interruptions — but works with any iTerm2 session.
 - **Node.js 16+** — only to run the `npm` scripts (task runner)
 - (Optional) a **MiniMax API key** for the AI auto-continue backend
 
-> **No `npm install` and no `npm login` needed.** The project has zero npm
-> dependencies and is not published to the npm registry — `npm` is only a task
-> runner that shells out to the Python tool. `npm start` works straight after
-> clone.
+> **To run it you need no `npm install` and no `npm login`** — the project has
+> zero npm dependencies; `npm` is only a task runner that shells out to the Python
+> tool. (`npm login` is only for the maintainer publishing to the registry.)
+
+### Install from npm (global)
+
+```bash
+npm install -g iterm-usage-monitor
+iterm-admin --open      # launch the web admin
+iterm-ctl list          # the CLI
+```
+
+Reads `MINIMAX_*` from your shell environment (there's no `.env` in a global
+install), e.g. `export MINIMAX_API_KEY=…` in your shell profile. macOS only.
 
 ---
 
