@@ -1,4 +1,4 @@
-# iTerm2 Session Monitor & Controller
+# itermon — iTerm2 Session Monitor & Controller
 
 [![npm](https://img.shields.io/npm/v/itermon)](https://www.npmjs.com/package/itermon)
 
