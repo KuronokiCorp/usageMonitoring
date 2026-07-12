@@ -30,7 +30,6 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import iterm_ctl
-import iterm_ai
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 JOBS_FILE = os.path.join(HERE, "iterm_jobs.json")
@@ -98,44 +97,16 @@ def do_send(target: str, command: str, submit: bool) -> list[dict]:
 
 
 def run_job(job: dict) -> dict:
-    """Execute a scheduled job. If ai_check is set, read each target and only send
-    when the AI/heuristic judges the session should 'continue'. Returns a summary
-    dict with a human-readable 'status' string."""
+    """Execute a scheduled job: send its command to the matching session(s).
+    Returns a summary dict with a human-readable 'status' string."""
     target = job["target"]
     command = job["command"]
     submit = job.get("submit", False)
     name = job.get("name", "job")
-    if not job.get("ai_check", False):
-        hits = do_send(target, command, submit)
-        who = ", ".join(h["index"] for h in hits) or "no match"
-        log_event("send", f'job "{name}" ({target}) → sent {command!r} to {len(hits)} session(s): {who}')
-        return {"status": f"sent to {len(hits)} session(s)", "sent": len(hits)}
-
-    sessions = iterm_ctl.list_sessions()
-    all_flag = target == "__all__"
-    targets = iterm_ctl.resolve_targets(sessions, None if all_flag else target, all_flag)
-    decisions, sent, resume_times = [], 0, []
-    for s in targets:
-        verdict = iterm_ai.judge(iterm_ctl.read_contents(s))
-        action = verdict["action"]
-        if action == "continue":
-            iterm_ctl.send_text(s, command, enter=True)
-            if submit:
-                iterm_ctl.send_text(s, "", enter=True)
-            sent += 1
-        elif action == "wait" and verdict.get("resume_at"):
-            resume_times.append(verdict["resume_at"])
-        decisions.append({"index": s.index, "name": s.name, "action": action,
-                          "reason": verdict["reason"], "backend": verdict.get("backend"),
-                          "resume_at": verdict.get("resume_at")})
-    brief = ", ".join(f'{d["index"]}:{d["action"]}' for d in decisions) or "no targets"
-    # earliest known reset among sessions we're waiting on -> precise one-shot re-check
-    resume_at = min(resume_times) if resume_times else None
-    status = f"AI sent {sent}/{len(targets)} ({brief})"
-    if resume_at:
-        status += f" · waking at {resume_at}"
-    log_event("ai", f'job "{name}" ({target}) → {status}')
-    return {"status": status, "sent": sent, "decisions": decisions, "resume_at": resume_at}
+    hits = do_send(target, command, submit)
+    who = ", ".join(h["index"] for h in hits) or "no match"
+    log_event("send", f'job "{name}" ({target}) → sent {command!r} to {len(hits)} session(s): {who}')
+    return {"status": f"sent to {len(hits)} session(s)", "sent": len(hits)}
 
 
 # --------------------------------------------------------------------------- #
@@ -230,16 +201,11 @@ def scheduler_loop():
             for job in jobs:
                 if not job.get("enabled", True):
                     continue
-                # Fire when the cron matches OR a precise one-shot resume is due
-                # (resume_at was set on a prior run when the AI read a reset time).
-                resume_due = job.get("resume_at") and job["resume_at"] <= now_str
                 try:
-                    if cron_match(job["schedule"], now) or resume_due:
+                    if cron_match(job["schedule"], now):
                         result = run_job(job)
                         job["last_run"] = now_str
                         job["last_status"] = result["status"]
-                        # carry the next precise wake time (or clear it once resumed)
-                        job["resume_at"] = result.get("resume_at")
                         changed = True
                 except Exception as e:  # keep the scheduler alive on any single failure
                     job["last_run"] = now_str
@@ -297,8 +263,6 @@ class Handler(BaseHTTPRequestHandler):
                 {"index": s.index, "id": s.id, "tty": s.tty, "job": s.job, "name": s.name}
                 for s in sessions
             ])
-        if self.path == "/api/ai/health":
-            return self._json(iterm_ai.health())
         if self.path.startswith("/api/logs"):
             with _log_lock:
                 return self._json(list(_log))
@@ -356,15 +320,13 @@ class Handler(BaseHTTPRequestHandler):
                 "target": body["target"].strip(),
                 "command": body["command"],
                 "submit": bool(body.get("submit", False)),
-                "ai_check": bool(body.get("ai_check", False)),
                 "schedule": body["schedule"].strip(),
                 "enabled": True,
                 "last_run": None,
                 "last_status": None,
             })
             save_jobs(jobs)
-            log_event("job", f'registered "{body["name"].strip()}" → {body["target"].strip()} @ {body["schedule"].strip()}'
-                             + (" [AI]" if body.get("ai_check") else ""))
+            log_event("job", f'registered "{body["name"].strip()}" → {body["target"].strip()} @ {body["schedule"].strip()}')
             return self._json({"ok": True})
 
         if self.path == "/api/jobs/create_bulk":
@@ -386,7 +348,6 @@ class Handler(BaseHTTPRequestHandler):
                     "target": it["target"].strip(),
                     "command": it["command"],
                     "submit": bool(it.get("submit", False)),
-                    "ai_check": bool(it.get("ai_check", False)),
                     "schedule": it["schedule"].strip(),
                     "enabled": True,
                     "last_run": None,
@@ -396,8 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             jobs.extend(new_entries)
             save_jobs(jobs)
             for e in new_entries:
-                log_event("job", f'registered "{e["name"]}" → {e["target"]} @ {e["schedule"]}'
-                                 + (" [AI]" if e.get("ai_check") else ""))
+                log_event("job", f'registered "{e["name"]}" → {e["target"]} @ {e["schedule"]}')
             return self._json({"ok": True, "created": len(new_entries)})
 
         if self.path == "/api/jobs/toggle":
@@ -424,24 +384,6 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._json({"error": str(e)}, 500)
             return self._json({"error": "job not found"}, 404)
-
-        if self.path == "/api/ai/check":  # read a target and judge, WITHOUT sending
-            target = body.get("target", "")
-            try:
-                sessions = iterm_ctl.list_sessions()
-                targets = iterm_ctl.resolve_targets(sessions, target, target == "__all__")
-                if not targets:
-                    return self._json({"error": "no match"}, 404)
-                out = []
-                for s in targets:
-                    v = iterm_ai.judge(iterm_ctl.read_contents(s))
-                    out.append({"index": s.index, "name": s.name, **v})
-                brief = ", ".join(f'{d["index"]}:{d["action"]}' for d in out)
-                log_event("ai-check", f'checked {len(out)} session(s): {brief}')
-                return self._json({"decisions": out})
-            except Exception as e:
-                log_event("error", f'ai-check {target}: {e}')
-                return self._json({"error": str(e)}, 500)
 
         return self._json({"error": "not found"}, 404)
 
@@ -501,7 +443,6 @@ PAGE = r"""<!doctype html>
 <header>
   <span class="dot"></span><h1>iTerm2 Admin</h1>
   <span class="muted" id="clock"></span>
-  <span class="pill" id="aiBadge" style="margin-left:auto" title="AI backend for auto-continue">AI: …</span>
 </header>
 <main>
   <!-- Sessions -->
@@ -524,7 +465,6 @@ PAGE = r"""<!doctype html>
     <div class="row" style="margin-top:12px">
       <button onclick="send()">Send</button>
       <button class="ghost" onclick="readTarget()">Preview screen</button>
-      <button class="ghost" onclick="aiCheck()">AI check</button>
     </div>
     <div class="result" id="sendResult"></div>
     <pre class="result" id="readResult" style="max-height:220px;overflow:auto"></pre>
@@ -560,8 +500,6 @@ PAGE = r"""<!doctype html>
     <textarea id="jobCmd" placeholder="continue"></textarea>
     <div class="check"><input type="checkbox" id="jobSubmit" checked>
       <label for="jobSubmit" style="margin:0">Submit (extra Enter for Claude Code)</label></div>
-    <div class="check"><input type="checkbox" id="jobAi">
-      <label for="jobAi" style="margin:0">AI check first — only send if the session looks idle / interrupted / limit-reset (skips busy sessions)</label></div>
     <div style="margin-top:12px"><button onclick="createJob()">Register job</button></div>
     <div class="result" id="jobResult"></div>
   </section>
@@ -581,7 +519,7 @@ PAGE = r"""<!doctype html>
       <label class="muted" style="margin-left:8px"><input type="checkbox" id="logAuto" checked style="width:auto"> auto</label>
     </h2>
     <pre id="logView" style="max-height:280px;overflow:auto;margin:0;padding:8px;background:#0f1319;border:1px solid #2a2f3a;border-radius:6px;font-size:12px;white-space:pre-wrap"></pre>
-    <div class="muted" style="margin-top:6px">Sends, AI decisions, cron fires and errors. Persisted to <code>activity.log</code>.</div>
+    <div class="muted" style="margin-top:6px">Sends, cron fires, job registrations and errors. Persisted to <code>activity.log</code>.</div>
   </section>
 </main>
 
@@ -674,31 +612,6 @@ async function readTarget(){
   else { el.className='result ok'; el.textContent = r.contents; el.scrollTop = el.scrollHeight; }
 }
 
-async function aiCheck(){
-  const el = $('sendResult');
-  el.className='result ok'; el.textContent='Reading & judging…';
-  const r = await api('/api/ai/check', {target:$('sendTarget').value});
-  if(r.error){ el.className='result err'; el.textContent='Error: '+r.error; return; }
-  el.className='result ok';
-  el.textContent = r.decisions.map(d =>
-    `${d.index}  ${d.name}\n  → ${d.action.toUpperCase()} — ${d.reason}\n  [${d.backend||''}]`
-  ).join('\n\n');
-}
-
-async function loadHealth(){
-  try{
-    const h = await api('/api/ai/health');
-    const b = $('aiBadge');
-    if(h.backend === 'minimax'){
-      b.textContent = 'AI: MiniMax ('+h.model+')'; b.style.background='#132b1d'; b.style.color='#9ff0c0';
-      b.title = 'Auto-continue judged by MiniMax — '+h.base_url;
-    } else {
-      b.textContent = 'AI: heuristic'; b.style.background='#2b2718'; b.style.color='#ffe0a0';
-      b.title = 'MINIMAX_API_KEY not set — using built-in rules. Set MINIMAX_API_KEY (and optionally MINIMAX_MODEL / MINIMAX_BASE_URL) to enable MiniMax.';
-    }
-  }catch(e){ $('aiBadge').textContent='AI: ?'; }
-}
-
 function setCron(v){ $('jobSchedule').value = v; }
 
 async function createJob(){
@@ -719,7 +632,7 @@ async function createJob(){
   const jobs = targets.map(t => ({
     name: multi ? `${baseName} — ${t.label.trim().slice(0,24)}` : baseName,
     target: t.value, command:$('jobCmd').value,
-    schedule:$('jobSchedule').value, submit:$('jobSubmit').checked, ai_check:$('jobAi').checked}));
+    schedule:$('jobSchedule').value, submit:$('jobSubmit').checked}));
   const r = await api('/api/jobs/create_bulk', {jobs});
   if(r.ok){ el.className='result ok';
     el.textContent = `Registered ${r.created} job(s) for: ` + targets.map(t=>t.label.trim().split(/\s+/)[0]).join(', ');
@@ -737,11 +650,11 @@ async function loadJobs(){
     const tr = document.createElement('tr'); tr.className='jobrow';
     const targetName = (SESSIONS.find(s=>'id:'+s.id===j.target)||{}).name || j.target;
     tr.innerHTML = `
-      <td>${j.name.replace(/</g,'&lt;')}<div class="st">${j.enabled?'enabled':'paused'} · “${(j.command||'').replace(/</g,'&lt;').slice(0,40)}”${j.submit?' ⏎':''}${j.ai_check?' · 🤖 AI-gated':''}</div></td>
+      <td>${j.name.replace(/</g,'&lt;')}<div class="st">${j.enabled?'enabled':'paused'} · “${(j.command||'').replace(/</g,'&lt;').slice(0,40)}”${j.submit?' ⏎':''}</div></td>
       <td class="mono">${j.schedule}</td>
       <td>${targetName.replace(/</g,'&lt;').slice(0,28)}</td>
       <td class="mono">${j.next_run||'—'}</td>
-      <td class="mono">${j.last_run||'—'}<div class="st">${j.last_status||''}${j.resume_at?` · ⏰ wake ${j.resume_at}`:''}</div></td>
+      <td class="mono">${j.last_run||'—'}<div class="st">${j.last_status||''}</div></td>
       <td></td>`;
     const actions = tr.lastElementChild;
     const mk = (label, cls, fn) => { const b=document.createElement('button'); b.className=cls; b.textContent=label; b.onclick=fn; b.style.marginRight='4px'; return b; };
@@ -752,7 +665,7 @@ async function loadJobs(){
   }
 }
 
-const LOG_COLORS = {send:'#9cc4ff', ai:'#c8a8ff', 'ai-check':'#c8a8ff', job:'#9ff0c0', error:'#ffb0b0'};
+const LOG_COLORS = {send:'#9cc4ff', job:'#9ff0c0', error:'#ffb0b0', server:'#8b93a7'};
 async function loadLogs(){
   const logs = await api('/api/logs');
   const el = $('logView');
@@ -768,11 +681,10 @@ async function loadLogs(){
 }
 
 loadSessions().then(loadJobs);
-loadHealth(); loadLogs();
+loadLogs();
 setInterval(loadSessions, 5000);
 setInterval(loadJobs, 15000);
 setInterval(() => { if($('logAuto').checked) loadLogs(); }, 4000);
-setInterval(loadHealth, 30000);
 </script>
 </body></html>
 """
@@ -787,7 +699,7 @@ def main():
     args = ap.parse_args()
 
     load_recent_log()
-    log_event("server", f"admin started on {args.host}:{args.port} · AI backend {iterm_ai.health()['backend']}")
+    log_event("server", f"admin started on {args.host}:{args.port}")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"

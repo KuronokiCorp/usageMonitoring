@@ -1,7 +1,7 @@
 {
   "name": "itermon",
-  "version": "1.0.0",
-  "description": "Monitor and control iTerm2 sessions from a local web admin, with AI auto-continue (MiniMax) that resumes rate-limited/idle sessions.",
+  "version": "1.1.0",
+  "description": "Monitor and control iTerm2 sessions from a CLI or local web admin, with a cron scheduler for recurring sends.",
   "scripts": {
     "start": "bash start.sh",
     "start:open": "bash start.sh --open",
@@ -10,7 +10,6 @@
     "watch": "python3 iterm_ctl.py watch",
     "send": "python3 iterm_ctl.py send",
     "read": "python3 iterm_ctl.py read",
-    "ai": "python3 iterm_ai.py",
     "publish:npm": "bash -c 'set -a; . ./.env 2>/dev/null; set +a; npm publish \"--//registry.npmjs.org/:_authToken=$NPM_TOKEN\"'"
   },
   "bin": {
@@ -20,9 +19,7 @@
   "files": [
     "iterm_ctl.py",
     "iterm_web.py",
-    "iterm_ai.py",
     "start.sh",
-    ".env.example",
     "README.md",
     "LICENSE"
   ],
@@ -42,7 +39,6 @@
     "terminal",
     "automation",
     "claude-code",
-    "minimax",
     "monitoring",
     "cron"
   ],
