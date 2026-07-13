@@ -1,6 +1,6 @@
 {
   "name": "itermon",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Monitor and control iTerm2 sessions from a CLI or local web admin, with a cron scheduler for recurring sends.",
   "scripts": {
     "start": "bash start.sh",

@@ -103,6 +103,26 @@ npm run send -- --all "pwd"                 # run in every session (asks y/N)
 > (the frontmost becomes window 1), so `3.1.1` can point at a different session
 > minute to minute; the UUID never moves.
 
+### Windows, tabs, and split panes
+
+iTerm's structure is **window → tab → session** (a "session" is a single pane),
+and the index is `window.tab.session`, all 1-based. Everything is enumerated at
+every level, so one iTerm with many windows — or windows with many tabs, or tabs
+split into panes — is fully handled, one row per pane:
+
+```
+1.1.1   window 1, tab 1, pane 1
+1.2.1   window 1, tab 2, pane 1
+1.2.2   window 1, tab 2, pane 2   ← a split pane
+2.1.1   window 2, tab 1, pane 1
+```
+
+Every pane, however deeply nested, gets its own stable UUID and can be targeted
+individually (or with `--all`, which hits every pane in every tab in every
+window). Only the leading window number is positional — the frontmost window is
+always window 1, so those numbers shift as you focus/open/close windows; the
+UUID does not, which is why scheduled jobs target by `id:`.
+
 ### `send` flags
 
 - `--no-enter` — type the text without pressing Return.
