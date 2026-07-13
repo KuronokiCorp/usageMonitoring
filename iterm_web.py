@@ -230,6 +230,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # API responses reflect live iTerm state — never let the browser cache them
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
         self.end_headers()
         self.wfile.write(body)
 
@@ -531,7 +534,8 @@ function tick(){ $('clock').textContent = new Date().toLocaleTimeString(); }
 setInterval(tick, 1000); tick();
 
 async function api(path, body){
-  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)} : {};
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}
+                   : {cache:'no-store'};
   const r = await fetch(path, opt);
   return r.json();
 }
