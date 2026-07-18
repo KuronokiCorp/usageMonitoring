@@ -1,0 +1,12 @@
+{
+  "hosting": {
+    "target": "itermon",
+    "public": "docs",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "cleanUrls": true
+  }
+}

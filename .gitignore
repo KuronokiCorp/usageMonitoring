@@ -9,6 +9,9 @@ activity.log
 node_modules/
 npm-debug.log*
 
+# Firebase deploy cache
+.firebase/
+
 # Python
 __pycache__/
 *.pyc

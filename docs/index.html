@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>itermon — iTerm2 Session Monitor &amp; Controller</title>
+<meta name="description" content="Monitor every running iTerm2 session from one place, send commands to any of them, and schedule recurring sends with cron — from a CLI or a local web admin." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+    --accent: #F598F2;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: #000;
+    color: #fff;
+    font-family: 'Figtree', system-ui, sans-serif;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: inherit; text-decoration: none; }
+  .container { max-width: 1340px; margin: 0 auto; padding-left: 15px; padding-right: 15px; }
+
+  /* ------------------------------------------------ nav */
+  header.site-nav {
+    position: absolute; inset: 0 0 auto 0; z-index: 10;
+  }
+  .nav-inner {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    padding-top: 36px; padding-bottom: 36px;
+  }
+  .nav-links { display: flex; gap: 40px; }
+  .nav-item { display: flex; gap: 6px; align-items: baseline; }
+  .nav-index {
+    font-size: 8px; line-height: 12px; letter-spacing: -0.08px;
+    font-weight: 500; text-transform: uppercase; opacity: 0.7;
+  }
+  .nav-label {
+    font-size: 12px; line-height: 16px; letter-spacing: -0.12px;
+    font-weight: 500; text-transform: uppercase;
+    position: relative; display: inline-block;
+  }
+  .nav-link-underline::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -2px;
+    height: 1px; background: currentColor;
+    transform: scaleX(0); transform-origin: right;
+    transition: transform 0.45s var(--ease-spring);
+  }
+  .nav-item:hover .nav-link-underline::after { transform: scaleX(1); transform-origin: left; }
+  .nav-meta {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+    font-size: 12px; line-height: 16px; letter-spacing: -0.12px;
+    font-weight: 500; text-transform: uppercase;
+  }
+  .nav-meta .clock { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+  .menu-toggle {
+    display: none; background: none; border: none; color: #fff;
+    font: inherit; font-size: 12px; letter-spacing: -0.12px;
+    font-weight: 500; text-transform: uppercase; cursor: pointer; padding: 4px 0;
+  }
+  .mobile-panel {
+    display: grid; grid-template-rows: 0fr; overflow: hidden;
+    transition: grid-template-rows 420ms var(--ease-spring);
+  }
+  .mobile-panel.open { grid-template-rows: 1fr; }
+  .mobile-panel > div { min-height: 0; }
+  .mobile-panel nav { display: flex; flex-direction: column; gap: 14px; padding: 10px 0 26px; }
+  .mobile-panel a {
+    font-size: 28px; line-height: 32px; letter-spacing: -0.84px;
+    font-weight: 500; text-transform: uppercase;
+  }
+
+  /* ------------------------------------------------ hero */
+  .hero { position: relative; min-height: 100svh; overflow: hidden; }
+  .hero-bg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; transition: opacity 1200ms ease-in-out;
+  }
+  .hero-bg.active { opacity: 1; }
+  .hero-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.10); z-index: 1; }
+  .hero-content {
+    position: relative; z-index: 2;
+    display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-end;
+    gap: 150px; min-height: 100svh; padding-top: 190px;
+  }
+  .hero-upper { display: flex; width: 100%; align-items: flex-start; }
+  .scene-switch { flex: 4; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .scene-btn {
+    background: none; border: none; color: #fff; cursor: pointer;
+    font: inherit; font-size: 12px; line-height: 16px; letter-spacing: -0.12px;
+    font-weight: 500; text-transform: uppercase;
+    opacity: 0.55; transition: opacity 0.3s ease, transform 0.45s var(--ease-spring);
+    display: flex; gap: 6px; align-items: baseline; padding: 0;
+  }
+  .scene-btn:hover { opacity: 0.75; transform: translateX(4px); }
+  .scene-btn.active { opacity: 1; }
+  .scene-btn .idx { font-size: 8px; line-height: 12px; opacity: 0.7; }
+  .availability {
+    flex: 1; display: flex; align-items: center; gap: 10px; justify-content: flex-start;
+    font-size: 12px; line-height: 16px; letter-spacing: -0.12px;
+    font-weight: 500; text-transform: uppercase;
+  }
+  .pulse-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--dot, #fff);
+    box-shadow: 0 0 12px 2px var(--dot, #fff);
+    animation: dotPulse 1.6s ease-in-out infinite;
+    transition: background 0.6s ease, box-shadow 0.6s ease;
+  }
+  .hero.scene-0 .pulse-dot { --dot: var(--accent); }
+
+  .hero-lower { display: flex; width: 100%; align-items: flex-end; padding-bottom: 60px; }
+  .hero-name-wrap { flex: 2; }
+  .hero-name {
+    font-size: 200px; line-height: 81%; letter-spacing: -6px;
+    font-weight: 500; text-transform: uppercase;
+  }
+  .hero-name .dot { color: #fff; transition: color 0.6s ease; }
+  .hero.scene-0 .hero-name .dot { color: var(--accent); }
+  .hero-aside { flex: 1; padding-left: 50px; display: flex; flex-direction: column; gap: 28px; }
+  .hero-aside p {
+    font-size: 16px; line-height: 24px; letter-spacing: -0.16px; font-weight: 500;
+  }
+  .cta-btn {
+    position: relative; overflow: hidden; isolation: isolate;
+    display: inline-block; align-self: flex-start;
+    border: 1px solid #fff; color: #fff;
+    font-size: 14px; letter-spacing: -0.14px; font-weight: 500; text-transform: lowercase;
+    padding: 14px 28px; cursor: pointer; background: none; font-family: inherit;
+    transition: color 0.35s ease, border-color 0.35s ease;
+  }
+  .cta-btn::before {
+    content: ""; position: absolute; inset: 0; z-index: -1;
+    background: var(--accent);
+    transform: translateY(101%);
+    transition: transform 0.45s var(--ease-spring);
+  }
+  .cta-btn:hover { color: #000; border-color: var(--accent); }
+  .cta-btn:hover::before { transform: translateY(0); }
+
+  /* ------------------------------------------------ reveal animations */
+  .reveal-up, .reveal-right { opacity: 0; }
+  .reveal-up.in { animation: revealUp 0.9s var(--ease-spring) forwards; }
+  .reveal-right.in { animation: revealRight 0.9s var(--ease-spring) forwards; }
+  .delay-1 { animation-delay: 0.08s !important; }
+
+  @keyframes revealUp   { from { opacity: 0; transform: translateY(80px);  } to { opacity: 1; transform: translateY(0); } }
+  @keyframes revealRight{ from { opacity: 0; transform: translateX(100px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes dotPulse   { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.45); } }
+
+  /* ------------------------------------------------ sections below hero */
+  section.block { padding: 140px 0; border-top: 1px solid rgba(255,255,255,0.12); }
+  .block-head {
+    display: flex; gap: 8px; align-items: baseline; margin-bottom: 64px;
+    font-weight: 500; text-transform: uppercase;
+  }
+  .block-head .idx { font-size: 10px; letter-spacing: -0.1px; opacity: 0.6; }
+  .block-head h2 { font-size: 13px; letter-spacing: -0.13px; font-weight: 500; }
+
+  .feature-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 60px 40px; list-style: none; }
+  .feature-list .idx { font-size: 10px; opacity: 0.5; display: block; margin-bottom: 14px; letter-spacing: -0.1px; }
+  .feature-list h3 {
+    font-size: 22px; line-height: 26px; letter-spacing: -0.44px;
+    font-weight: 500; text-transform: uppercase; margin-bottom: 12px;
+  }
+  .feature-list p { font-size: 15px; line-height: 23px; letter-spacing: -0.15px; opacity: 0.75; max-width: 340px; }
+
+  .screenshot-frame { border: 1px solid rgba(255,255,255,0.18); }
+  .screenshot-frame img { display: block; width: 100%; height: auto; }
+  .screenshot-cap { font-size: 12px; letter-spacing: -0.12px; opacity: 0.55; margin-top: 14px; font-weight: 500; text-transform: uppercase; }
+
+  .install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; }
+  .install-card h3 {
+    font-size: 13px; letter-spacing: -0.13px; font-weight: 500;
+    text-transform: uppercase; margin-bottom: 18px; opacity: 0.8;
+  }
+  pre.code {
+    background: #0a0a0a; border: 1px solid rgba(255,255,255,0.14);
+    padding: 24px; overflow-x: auto;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 13px; line-height: 22px; color: #eaeaea;
+  }
+  pre.code .c { opacity: 0.45; }
+  pre.code .p { color: var(--accent); }
+  .install-note { font-size: 13px; line-height: 20px; letter-spacing: -0.13px; opacity: 0.6; margin-top: 16px; }
+
+  footer.site-footer { border-top: 1px solid rgba(255,255,255,0.12); padding: 48px 0 60px; }
+  .footer-inner {
+    display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 20px;
+    font-size: 12px; letter-spacing: -0.12px; font-weight: 500; text-transform: uppercase;
+  }
+  .footer-links { display: flex; gap: 32px; }
+  .footer-links a { position: relative; }
+  .footer-inner .muted { opacity: 0.5; }
+
+  /* ------------------------------------------------ tablet 810–1199 */
+  @media (min-width: 810px) and (max-width: 1199.98px) {
+    .nav-inner { padding: 30px 3px; }
+    .nav-links { gap: 16px; }
+    .hero-name { font-size: 129.6px; line-height: 113.4px; letter-spacing: -7.7px; }
+    .hero-lower { gap: 28px; padding-bottom: 52px; }
+    .hero-aside { padding-left: 24px; }
+    .container { padding-left: 18px; padding-right: 18px; }
+  }
+
+  /* ------------------------------------------------ mobile <810 */
+  @media (max-width: 809.98px) {
+    .container { padding-left: 18px; padding-right: 18px; }
+    .nav-inner { padding-top: 24px; padding-bottom: 24px; }
+    .nav-links { display: none; }
+    .menu-toggle { display: block; }
+    .hero-content { justify-content: flex-end; align-items: flex-start; gap: 72px; padding-top: 140px; }
+    .hero-upper { flex-direction: column; gap: 28px; }
+    .hero-lower { flex-direction: column; align-items: flex-start; gap: 32px; padding-bottom: 44px; }
+    .hero-name { font-size: clamp(68px, 21vw, 80px); line-height: 96px; letter-spacing: -4.8px; }
+    .hero-aside { padding-left: 0; }
+    .hero-aside p { max-width: 420px; }
+    section.block { padding: 90px 0; }
+    .feature-list { grid-template-columns: 1fr; gap: 44px; }
+    .install-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ------------------------------------------------ reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.001s !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001s !important;
+    }
+    .reveal-up, .reveal-right { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-nav">
+  <div class="container">
+    <div class="nav-inner">
+      <nav class="nav-links" aria-label="Primary">
+        <a class="nav-item" href="#features"><span class="nav-index">01 /</span><span class="nav-label nav-link-underline">Features</span></a>
+        <a class="nav-item" href="#admin"><span class="nav-index">02 /</span><span class="nav-label nav-link-underline">Web&nbsp;Admin</span></a>
+        <a class="nav-item" href="#install"><span class="nav-index">03 /</span><span class="nav-label nav-link-underline">Install</span></a>
+        <a class="nav-item" href="https://github.com/KuronokiCorp/usageMonitoring"><span class="nav-index">04 /</span><span class="nav-label nav-link-underline">GitHub</span></a>
+      </nav>
+      <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="mobileNav">Menu</button>
+      <div class="nav-meta">
+        <a class="nav-link-underline" href="https://www.npmjs.com/package/itermon">npm / itermon</a>
+        <span class="clock" id="clock" role="status" aria-label="local time">LOCAL 00:00:00</span>
+      </div>
+    </div>
+    <div class="mobile-panel" id="mobileNav">
+      <div>
+        <nav aria-label="Mobile">
+          <a href="#features">Features</a>
+          <a href="#admin">Web Admin</a>
+          <a href="#install">Install</a>
+          <a href="https://github.com/KuronokiCorp/usageMonitoring">GitHub</a>
+        </nav>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero scene-0" id="hero" aria-label="Intro">
+    <canvas class="hero-bg active" id="bg0" aria-hidden="true"></canvas>
+    <canvas class="hero-bg" id="bg1" aria-hidden="true"></canvas>
+    <canvas class="hero-bg" id="bg2" aria-hidden="true"></canvas>
+    <div class="hero-overlay" aria-hidden="true"></div>
+
+    <div class="container hero-content">
+      <div class="hero-upper">
+        <div class="scene-switch" role="group" aria-label="Background scene">
+          <button class="scene-btn active" data-scene="0"><span class="idx">01 /</span> Session Wave</button>
+          <button class="scene-btn" data-scene="1"><span class="idx">02 /</span> Cron Grid</button>
+          <button class="scene-btn" data-scene="2"><span class="idx">03 /</span> Log Tunnel</button>
+        </div>
+        <div class="availability" role="status">
+          <span class="pulse-dot" aria-hidden="true"></span>
+          <span>Live on npm · v1.1.2</span>
+        </div>
+      </div>
+
+      <div class="hero-lower">
+        <div class="hero-name-wrap">
+          <h1 class="hero-name reveal-up">itermon<span class="dot">.</span></h1>
+        </div>
+        <div class="hero-aside">
+          <p class="reveal-right">
+            Monitor every running iTerm2 session from one place — send commands
+            to any of them, read their screens, and schedule recurring sends with
+            cron. A zero-dependency CLI and local web admin for macOS.
+          </p>
+          <a class="cta-btn reveal-right delay-1" href="#install">npm install -g itermon</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" id="features" aria-label="Features">
+    <div class="container">
+      <div class="block-head"><span class="idx">01 /</span><h2>Features</h2></div>
+      <ul class="feature-list">
+        <li><span class="idx">01</span><h3>List</h3><p>Every session across every window, tab, and split pane — with tty, foreground job, and a stable UUID.</p></li>
+        <li><span class="idx">02</span><h3>Send</h3><p>Fire a command at one session, a matched subset, or all of them — from the CLI or the local web UI.</p></li>
+        <li><span class="idx">03</span><h3>Read</h3><p>Print any session's visible screen contents without touching the window.</p></li>
+        <li><span class="idx">04</span><h3>Watch</h3><p>A live auto-refreshing monitor of all sessions, right in your terminal.</p></li>
+        <li><span class="idx">05</span><h3>Schedule</h3><p>Recurring sends with cron expressions, run by an in-process scheduler.</p></li>
+        <li><span class="idx">06</span><h3>Activity Log</h3><p>A live, timestamped feed of every send, cron fire, and error.</p></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block" id="admin" aria-label="Web admin">
+    <div class="container">
+      <div class="block-head"><span class="idx">02 /</span><h2>The Web Admin</h2></div>
+      <figure>
+        <div class="screenshot-frame">
+          <img src="admin.png" alt="itermon web admin — live session list, send panel, cron scheduler, and activity log" loading="lazy" />
+        </div>
+        <figcaption class="screenshot-cap">Live session list · send panel · cron scheduler · activity log — served locally at 127.0.0.1:8765</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="block" id="install" aria-label="Install">
+    <div class="container">
+      <div class="block-head"><span class="idx">03 /</span><h2>Install</h2></div>
+      <div class="install-grid">
+        <div class="install-card">
+          <h3>From npm</h3>
+          <pre class="code"><span class="p">$</span> npm install -g itermon
+<span class="p">$</span> iterm-admin --open   <span class="c"># launch the web admin</span>
+<span class="p">$</span> iterm-ctl list       <span class="c"># the CLI</span></pre>
+          <p class="install-note">macOS · needs Python 3.10+ &amp; iTerm2. Zero dependencies — pure Python standard library, no pip install.</p>
+        </div>
+        <div class="install-card">
+          <h3>From source</h3>
+          <pre class="code"><span class="p">$</span> git clone https://github.com/KuronokiCorp/usageMonitoring.git
+<span class="p">$</span> cd usageMonitoring
+<span class="p">$</span> npm start             <span class="c"># admin at 127.0.0.1:8765</span></pre>
+          <p class="install-note">Works straight after clone — no npm install required. The first run triggers a one-time macOS prompt to allow controlling iTerm2.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <span>itermon<span style="color:var(--accent)">.</span></span>
+    <nav class="footer-links" aria-label="Footer">
+      <a class="nav-link-underline" href="https://www.npmjs.com/package/itermon">npm</a>
+      <a class="nav-link-underline" href="https://github.com/KuronokiCorp/usageMonitoring">GitHub</a>
+      <a class="nav-link-underline" href="https://github.com/KuronokiCorp/usageMonitoring/blob/main/LICENSE">MIT License</a>
+    </nav>
+    <span class="muted">macOS · iTerm2 · Python 3</span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------------- clock ---------------- */
+  var clockEl = document.getElementById("clock");
+  var fmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  function tick() { clockEl.textContent = "LOCAL " + fmt.format(new Date()); }
+  setInterval(tick, 1000); tick();
+
+  /* ---------------- mobile menu ---------------- */
+  var toggle = document.getElementById("menuToggle");
+  var panel = document.getElementById("mobileNav");
+  toggle.addEventListener("click", function () {
+    var open = panel.classList.toggle("open");
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "Close" : "Menu";
+  });
+  panel.querySelectorAll("a").forEach(function (a) {
+    a.addEventListener("click", function () {
+      panel.classList.remove("open");
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.textContent = "Menu";
+    });
+  });
+
+  /* ---------------- scene switching ---------------- */
+  var hero = document.getElementById("hero");
+  var canvases = [document.getElementById("bg0"), document.getElementById("bg1"), document.getElementById("bg2")];
+  var buttons = Array.prototype.slice.call(document.querySelectorAll(".scene-btn"));
+  var active = 0;
+  buttons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var i = Number(btn.dataset.scene);
+      if (i === active) return;
+      active = i;
+      buttons.forEach(function (b, j) { b.classList.toggle("active", j === i); });
+      canvases.forEach(function (c, j) { c.classList.toggle("active", j === i); });
+      hero.className = "hero scene-" + i;
+    });
+  });
+
+  /* ---------------- reveal on scroll ---------------- */
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+    });
+  }, { threshold: 0.35 });
+  document.querySelectorAll(".reveal-up, .reveal-right").forEach(function (el) { io.observe(el); });
+
+  /* ---------------- canvas scenes ---------------- */
+  function fit(canvas) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
+    return dpr;
+  }
+
+  /* scene 0 — session wave: sine-flow lines, faint pink */
+  function drawWave(c, t) {
+    var ctx = c.getContext("2d"), w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    var rows = 26;
+    for (var r = 0; r < rows; r++) {
+      var yBase = (h / (rows + 1)) * (r + 1);
+      ctx.beginPath();
+      for (var x = 0; x <= w; x += 8) {
+        var y = yBase
+          + Math.sin(x * 0.004 + t * 0.0006 + r * 0.45) * 26
+          + Math.sin(x * 0.011 - t * 0.0004 + r) * 10;
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      var pink = r % 5 === 0;
+      ctx.strokeStyle = pink ? "rgba(245,152,242,0.28)" : "rgba(255,255,255,0.10)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  /* scene 1 — cron grid: oscillating perspective grid */
+  function drawGrid(c, t) {
+    var ctx = c.getContext("2d"), w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    var cols = 34, rows = 20;
+    ctx.strokeStyle = "rgba(255,255,255,0.13)";
+    ctx.lineWidth = 1;
+    for (var i = 0; i <= cols; i++) {
+      ctx.beginPath();
+      for (var j = 0; j <= rows; j++) {
+        var px = (w / cols) * i + Math.sin(j * 0.6 + t * 0.0008 + i * 0.3) * 12;
+        var py = (h / rows) * j + Math.cos(i * 0.5 + t * 0.0006) * 10;
+        if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    for (var j2 = 0; j2 <= rows; j2++) {
+      ctx.beginPath();
+      for (var i2 = 0; i2 <= cols; i2++) {
+        var px2 = (w / cols) * i2 + Math.sin(j2 * 0.6 + t * 0.0008 + i2 * 0.3) * 12;
+        var py2 = (h / rows) * j2 + Math.cos(i2 * 0.5 + t * 0.0006) * 10;
+        if (i2 === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+      }
+      ctx.stroke();
+    }
+  }
+
+  /* scene 2 — log tunnel: concentric receding rectangles */
+  function drawTunnel(c, t) {
+    var ctx = c.getContext("2d"), w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+    var cx = w / 2, cy = h / 2, layers = 22;
+    for (var i = 0; i < layers; i++) {
+      var p = ((i / layers) + (t * 0.00004)) % 1;         /* 0 = far, 1 = near */
+      var scale = 0.04 + Math.pow(p, 2.2) * 1.15;
+      var rw = w * scale, rh = h * scale;
+      var alpha = 0.03 + p * 0.20;
+      ctx.strokeStyle = "rgba(255,255,255," + alpha.toFixed(3) + ")";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - rw / 2, cy - rh / 2, rw, rh);
+    }
+  }
+
+  var scenes = [drawWave, drawGrid, drawTunnel];
+  var transitioning = 0;
+  canvases.forEach(function (c) {
+    c.addEventListener("transitionstart", function () { transitioning++; });
+    c.addEventListener("transitionend", function () { transitioning = Math.max(0, transitioning - 1); });
+  });
+
+  function resizeAll() { canvases.forEach(fit); }
+  resizeAll();
+  window.addEventListener("resize", resizeAll);
+
+  if (reducedMotion) {
+    scenes.forEach(function (draw, i) { draw(canvases[i], 0); });
+  } else {
+    (function loop(t) {
+      /* animate the active scene always; inactive ones only mid-crossfade */
+      scenes.forEach(function (draw, i) {
+        if (i === active || transitioning > 0) draw(canvases[i], t);
+      });
+      requestAnimationFrame(loop);
+    })(0);
+  }
+})();
+</script>
+</body>
+</html>

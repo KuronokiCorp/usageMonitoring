@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "vectech-dc4e9"
+  },
+  "targets": {
+    "vectech-dc4e9": {
+      "hosting": {
+        "itermon": [
+          "itermon"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
