@@ -1,7 +1,7 @@
 # itermon — iTerm2 Session Monitor & Controller
 
 [![npm](https://img.shields.io/npm/v/itermon)](https://www.npmjs.com/package/itermon)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/kuronoki)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/vectechlimited)
 
 Monitor every running **iTerm2** session from one place, send commands to any of
 them, and schedule recurring sends with cron — from a CLI or a local web admin.
@@ -235,11 +235,11 @@ npm run publish:npm
 itermon is free and zero-dependency. If it saves you time, you can support its
 development:
 
-<a href="https://www.buymeacoffee.com/kuronoki" target="_blank">
+<a href="https://www.buymeacoffee.com/vectechlimited" target="_blank">
   <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
        alt="Buy Me A Coffee" height="48" width="173">
 </a>
 
 Or scan:
 
-<img src="docs/bmc-qr.png" alt="Buy Me A Coffee QR code for buymeacoffee.com/kuronoki" width="160" height="160">
+<img src="docs/bmc-qr.png" alt="Buy Me A Coffee QR code for buymeacoffee.com/vectechlimited" width="160" height="160">
