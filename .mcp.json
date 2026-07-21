@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "itermon": {
+      "command": "python3",
+      "args": [
+        "/Users/shinan/Documents/vectechlimited/06_Products/Products_usageMonitoring/iterm_mcp.py"
+      ]
+    }
+  }
+}
