@@ -35,3 +35,10 @@ each agent writes `rollups/YYYY-MM.md` from its dailies in its first session of 
 month, after which pushed dailies older than the previous month are pruned (git history
 keeps every day — retrieve via `git log --follow` / `git show`). The product head owns
 this cadence. Full rule: `../../03_Operations/Worklog/README.md`.
+
+## Standing orders (company rule 13)
+A session opened here with NO specific command is not idle: the product head reads its
+worklog, runs any calendar duty due (KPI/P&L/rollup dates), then works the TOP item of
+`BACKLOG.md` through the normal pipeline, ending with a worklog entry and a short brief
+(what moved, what's next, what needs a CEO decision). Backlog is owned/ranked by the head.
+Full rule: `../../05_Organization/Standing_Orders.md`.
