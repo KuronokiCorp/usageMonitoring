@@ -36,6 +36,18 @@ month, after which pushed dailies older than the previous month are pruned (git 
 keeps every day — retrieve via `git log --follow` / `git show`). The product head owns
 this cadence. Full rule: `../../03_Operations/Worklog/README.md`.
 
+## Who's who — callsigns & numbers
+Address anyone by callsign or role slug; registry of record: `../../05_Organization/Employee_Registry.md`.
+
+| Callsign | Role | No. |
+|---|---|---|
+| **Messi** | `usagemonitoring-product-manager` (head) | v275001 |
+| **Lampard** | `usagemonitoring-release-manager` | v375001 |
+| **Reina** | `usagemonitoring-cfo` (functional line → group-cfo Buffon) | v375002 |
+| **Lizarazu** | `usagemonitoring-support-manager` | v375003 |
+| **Gerrard** | `usagemonitoring-developer` | v475001 |
+| **Dida** | `usagemonitoring-tester` | v475002 |
+
 ## Standing orders (company rule 13)
 A session opened here with NO specific command is not idle: the product head reads its
 worklog, runs any calendar duty due (KPI/P&L/rollup dates), then works the TOP item of
