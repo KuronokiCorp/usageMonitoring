@@ -22,7 +22,7 @@ The PM reviews every result (ACCEPT / REQUEST CHANGES) before it counts as done.
   folder. When launched inside this folder instead, follow this file's pipeline and read
   the HQ agent definitions by path for each role's duties.
 - **Daily action record (company rule 7):** every agent writes
-  `../../03_Operations/Worklog/<agent>/YYYY-MM-DD.md` at session end and reads its own
+  `docs/worklog/<agent>/` (in THIS repo)YYYY-MM-DD.md` at session end and reads its own
   last 5 entries at session start — that record is the agent's personality.
 - **Public releases stay CEO-approved** (rule 6) — no publish/deploy without the CEO.
 - Staffing or scope changes are **proposed to HQ** via the PM, never self-executed.
