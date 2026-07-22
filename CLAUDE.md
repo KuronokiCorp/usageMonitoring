@@ -28,7 +28,7 @@ The PM reviews every result (ACCEPT / REQUEST CHANGES) before it counts as done.
 - Staffing or scope changes are **proposed to HQ** via the PM, never self-executed.
 
 ## History & archive (company rule 12)
-This repo is part of the company's history of record. Commit and push records (worklogs,
+This repo is part of the company's history of record. **Session start: `git pull` first** — cloud Zidane and HQ also commit here; an unpulled session works on stale state. Commit and push records (worklogs,
 docs, agent files) at the end of any working day that changed them — unpushed history is
 unarchived. Sessions load only an agent's last 5 daily entries + latest monthly rollup;
 each agent writes `rollups/YYYY-MM.md` from its dailies in its first session of a new
