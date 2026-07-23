@@ -48,6 +48,14 @@ Address anyone by callsign or role slug; registry of record: `../../05_Organizat
 | **Gerrard** | `usagemonitoring-developer` | v475001 |
 | **Dida** | `usagemonitoring-tester` | v475002 |
 
+## Branch model & code review (company rule 15)
+CODE follows Git Flow: `main` = production (releasable, CEO-gated), `develop` =
+integration/test, `feature/<slug>` = one feature cut from `develop` and owned by the
+developer. **Never commit code straight to main/develop** — a feature merges to `develop`
+only after **tester PASS + Ayala (code-reviewer) APPROVE**; `develop`→`main` only on a
+CEO-approved release. Records (worklogs/briefs/backlog) still commit to `main` (rule 12).
+Full standard: `../../05_Organization/Coding_Standard.md`.
+
 ## Standing orders (company rule 13)
 A session opened here with NO specific command is not idle: the product head reads its
 worklog, runs any calendar duty due (KPI/P&L/rollup dates), then works the TOP item of
