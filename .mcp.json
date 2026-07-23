@@ -5,6 +5,16 @@
       "args": [
         "/Users/shinan/Documents/vectechlimited/06_Products/Products_usageMonitoring/iterm_mcp.py"
       ]
+    },
+    "heyhuman": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "heyhuman-mcp"
+      ],
+      "env": {
+        "TODO_API_TOKEN": "${TODOAI_TOKEN}"
+      }
     }
   }
 }
