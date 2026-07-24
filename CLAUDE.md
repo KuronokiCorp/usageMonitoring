@@ -62,3 +62,13 @@ worklog, runs any calendar duty due (KPI/P&L/rollup dates), then works the TOP i
 `BACKLOG.md` through the normal pipeline, ending with a worklog entry and a short brief
 (what moved, what's next, what needs a CEO decision). Backlog is owned/ranked by the head.
 Full rule: `../../05_Organization/Standing_Orders.md`.
+
+## Rule 16 — CEO decisions are asked as a pick-and-submit question (CEO, 24 Jul 2026)
+When this product needs a call from the CEO, do **not** bury it in prose or a long "decisions"
+list. Pose it as a **discrete question with 2–4 selectable options the CEO picks and submits**,
+**recommended option first** — one decision = one question = one submit. Interactive sessions
+render it with the question/selector UI (`AskUserQuestion`); headless/cloud agents write each
+CEO decision in that exact shape (one question, concrete options, recommended one marked) in the
+brief + CEO todo so it becomes a one-click prompt at review. Reserve questions for genuinely
+CEO-reserved calls (releases, money, staffing, direction, outward acts); decide the rest yourself.
+Full rule: `../../05_Organization/Org_Chart.md` (rule 16).
