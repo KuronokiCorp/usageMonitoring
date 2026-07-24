@@ -31,6 +31,8 @@ activity log. Screenshot uses demo data.</sub>
 - **Watch** — a live auto-refreshing monitor.
 - **Schedule** recurring sends with cron expressions (an in-process scheduler).
 - **Activity log** — a live, timestamped feed of every send, cron fire, and error.
+- **MCP server** — expose list/read/send to any MCP client (Claude Code, etc.)
+  over stdio, zero dependencies.
 
 ---
 
@@ -175,6 +177,66 @@ history survives a restart, and served at `GET /api/logs`.
 
 ---
 
+## MCP server
+
+`iterm_mcp.py` exposes itermon's core primitives to any **Model Context Protocol**
+client (Claude Code, Claude Desktop, etc.) over the MCP **stdio** transport. It
+speaks JSON-RPC 2.0, has **zero dependencies** (pure Python 3 standard library,
+like the rest of itermon), and reuses the same AppleScript engine as the CLI.
+
+### Tools
+
+| Tool            | Arguments                              | What it does                                             |
+|-----------------|----------------------------------------|----------------------------------------------------------|
+| `list_sessions` | *(none)*                               | List every iTerm2 session with index, UUID, tty, title, and foreground job. |
+| `read_screen`   | `target`                               | Read the visible screen of the matching session(s).      |
+| `send_command`  | `target`, `command`, `enter` *(opt)*   | Type text into the matching session(s), optionally pressing Enter. Refuses when the target matches nothing. |
+
+`target` accepts the same selectors as the CLI — an index like `2.1.1`,
+`id:<uuid-prefix>`, `tty:<suffix>`, `name:<regex>`, or a bare substring of the
+title. **Prefer `id:` for anything scripted** (see [Targeting a session](#targeting-a-session)).
+
+### Setup
+
+Installed globally from npm, the server is on your `PATH` as `itermon-mcp`.
+Register it in a project's `.mcp.json` (or your client's MCP config):
+
+```json
+{
+  "mcpServers": {
+    "itermon": {
+      "command": "itermon-mcp"
+    }
+  }
+}
+```
+
+Running from a clone instead? Point at the file directly:
+
+```json
+{
+  "mcpServers": {
+    "itermon": {
+      "command": "python3",
+      "args": ["/absolute/path/to/iterm_mcp.py"]
+    }
+  }
+}
+```
+
+You can also launch it via npm for a quick check: `npm run mcp`.
+
+The first tool call may trigger the one-time macOS prompt to allow controlling
+iTerm2 — approve it, same as the CLI.
+
+> **Safety:** `send_command` types into whatever session matches `target`,
+> including sessions running Claude Code. It refuses to run when nothing matches,
+> but it does **not** ask for confirmation — the MCP client is responsible for
+> that. Target a specific `id:` rather than a positional index for anything you
+> don't want to misfire.
+
+---
+
 ## How it works
 
 Everything rests on iTerm2's AppleScript interface. `iterm_ctl.py` wraps three
@@ -195,6 +257,7 @@ scheduler thread and the activity log.
 |------------------|--------------------------------------------------------|
 | `iterm_ctl.py`   | CLI + the AppleScript primitives (list / send / read / watch) |
 | `iterm_web.py`   | Local web admin + in-process cron scheduler + activity log |
+| `iterm_mcp.py`   | MCP stdio server (`itermon-mcp`) exposing list / read / send |
 | `start.sh`       | Launches the web server                                |
 | `iterm_jobs.json`| Saved scheduled jobs (created at runtime, gitignored)  |
 | `activity.log`   | Activity-log history (created at runtime, gitignored)  |

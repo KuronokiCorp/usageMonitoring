@@ -19,12 +19,18 @@ Register in a project .mcp.json:
 from __future__ import annotations
 
 import json
+import os
 import sys
+
+# When installed as a global npm bin, this file is invoked through a symlink
+# (node_modules/.bin/itermon-mcp). Ensure the real directory holding
+# iterm_ctl.py is importable regardless of how we were launched.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import iterm_ctl
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_INFO = {"name": "itermon", "version": "1.1.4"}
+SERVER_INFO = {"name": "itermon", "version": "1.2.0"}
 
 TARGET_HELP = (
     "Session selector: an index like '2.1.1' (window.tab.session), 'id:<uuid-prefix>', "
