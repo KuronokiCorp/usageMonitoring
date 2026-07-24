@@ -1,7 +1,7 @@
 {
   "name": "itermon",
-  "version": "1.1.4",
-  "description": "Monitor and control iTerm2 sessions from a CLI or local web admin, with a cron scheduler for recurring sends.",
+  "version": "1.2.0",
+  "description": "Monitor and control iTerm2 sessions from a CLI, a local web admin, or an MCP server, with a cron scheduler for recurring sends.",
   "scripts": {
     "start": "bash start.sh",
     "start:open": "bash start.sh --open",
@@ -10,15 +10,18 @@
     "watch": "python3 iterm_ctl.py watch",
     "send": "python3 iterm_ctl.py send",
     "read": "python3 iterm_ctl.py read",
+    "mcp": "python3 iterm_mcp.py",
     "publish:npm": "bash -c 'set -a; . ./.env 2>/dev/null; set +a; npm publish \"--//registry.npmjs.org/:_authToken=$NPM_TOKEN\"'"
   },
   "bin": {
     "iterm-ctl": "iterm_ctl.py",
-    "iterm-admin": "start.sh"
+    "iterm-admin": "start.sh",
+    "itermon-mcp": "iterm_mcp.py"
   },
   "files": [
     "iterm_ctl.py",
     "iterm_web.py",
+    "iterm_mcp.py",
     "start.sh",
     "README.md",
     "LICENSE"
@@ -41,7 +44,9 @@
     "automation",
     "claude-code",
     "monitoring",
-    "cron"
+    "cron",
+    "mcp",
+    "model-context-protocol"
   ],
   "license": "MIT"
 }
