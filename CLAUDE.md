@@ -72,3 +72,12 @@ CEO decision in that exact shape (one question, concrete options, recommended on
 brief + CEO todo so it becomes a one-click prompt at review. Reserve questions for genuinely
 CEO-reserved calls (releases, money, staffing, direction, outward acts); decide the rest yourself.
 Full rule: `../../05_Organization/Org_Chart.md` (rule 16).
+
+## Rule 17 — every product "talk" routes through this product's PM (CEO, 24 Jul 2026)
+All communication and all work about this product — a CEO instruction, a question, an update, a
+build, a fix — goes **to and through this product's product manager**. The PM reviews/drives it
+(through this product's tester + reviewer gate where it is work) and **reports the outcome to the
+CEO**. This binds everyone, **including HQ / the CEO-facing session / autonomous runs** — HQ may set
+direction and dispatch, but must not do this product's work or speak for it and bypass its PM. A
+deliverable that never passed this PM is *unreviewed*, not done. Full rule:
+`../../05_Organization/Org_Chart.md` (rule 17).
