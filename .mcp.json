@@ -3,7 +3,7 @@
     "itermon": {
       "command": "python3",
       "args": [
-        "/Users/shinan/Documents/vectechlimited/06_Products/Products_usageMonitoring/iterm_mcp.py"
+        "/Users/shinan/vectechlimited/06_Products/Products_usageMonitoring/iterm_mcp.py"
       ]
     },
     "heyhuman": {
