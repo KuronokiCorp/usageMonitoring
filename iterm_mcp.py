@@ -137,13 +137,16 @@ def handle(msg: dict):
         params = msg.get("params", {})
         handler = HANDLERS.get(params.get("name"))
         if handler is None:
-            raise ValueError(f"unknown tool: {params.get('name')!r}")
-        try:
-            text = handler(params.get("arguments") or {})
-            is_error = False
-        except Exception as exc:  # surfaced to the model, not the transport
-            text = f"Error: {exc}"
+            available = ", ".join(HANDLERS)
+            text = f"Unknown tool: {params.get('name')!r}. Available tools: {available}"
             is_error = True
+        else:
+            try:
+                text = handler(params.get("arguments") or {})
+                is_error = False
+            except Exception as exc:  # surfaced to the model, not the transport
+                text = f"Error: {exc}"
+                is_error = True
         return {"content": [{"type": "text", "text": text}], "isError": is_error}
     raise LookupError(f"method not found: {method!r}")
 
