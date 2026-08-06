@@ -11,6 +11,8 @@
     "send": "python3 iterm_ctl.py send",
     "read": "python3 iterm_ctl.py read",
     "mcp": "python3 iterm_mcp.py",
+    "test": "python3 tests/run_tests.py",
+    "test:counter": "python3 tests/counter_test.py",
     "publish:npm": "bash -c 'set -a; . ./.env 2>/dev/null; set +a; npm publish \"--//registry.npmjs.org/:_authToken=$NPM_TOKEN\"'"
   },
   "bin": {
