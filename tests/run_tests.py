@@ -710,10 +710,27 @@ class G6MCPWireProtocol(unittest.TestCase):
 # section 3, BACKLOG 0c/0e), using tests/fake/tmux the same way G1-G6 use
 # tests/fake/osascript. Runs on any machine, tmux installed or not.
 # --------------------------------------------------------------------------- #
-def _tmux_calls(log_path: str) -> list:
+def _tmux_log_records(log_path: str) -> list:
     with open(log_path, encoding="utf-8") as f:
         lines = [ln for ln in f.read().splitlines() if ln.strip()]
     return [json.loads(ln) for ln in lines]
+
+
+def _tmux_calls(log_path: str) -> list:
+    """The argv list of every fake-tmux invocation, in order -- what every
+    pre-round-4 test in this class asserts on."""
+    return [record["argv"] for record in _tmux_log_records(log_path)]
+
+
+def _tmux_call_lc_all(log_path: str) -> list:
+    """The LC_ALL value fake-tmux actually saw in *its own* env for every
+    invocation, in order (BACKLOG round 4, Ayala's finding: _tmux_env()'s
+    LC_ALL=C.UTF-8 fix had zero regression coverage -- deleting it left the
+    suite green because every test's fake-tmux process just inherited
+    whatever real, already-UTF-8 locale the host machine happened to have.
+    This reads what TmuxBackend's subprocess.run(env=...) actually handed
+    the child process, independent of the host's own ambient locale)."""
+    return [record["env_LC_ALL"] for record in _tmux_log_records(log_path)]
 
 
 class G8TmuxBackendHermetic(unittest.TestCase):
@@ -815,6 +832,44 @@ class G8TmuxBackendHermetic(unittest.TestCase):
             got = iterm_ctl.read_contents(session)
         self.assertEqual(got, "$ echo hi\nhi\n")
         self.assertEqual(_tmux_calls(log), [["capture-pane", "-p", "-t", "%9"]])
+
+    def test_every_tmux_invocation_gets_lc_all_c_utf8(self):
+        # BACKLOG round 4 (Ayala's finding): _tmux_env() forces
+        # LC_ALL=C.UTF-8 on every tmux subprocess call, working around
+        # tmux's -F engine silently replacing SEP with "_" (collapsing the
+        # 6-field parse) when it doesn't see a UTF-8-declaring locale in its
+        # own env -- see _tmux_env()'s docstring in iterm_ctl.py. Every
+        # earlier test in this file exercises that code path but none of
+        # them asserted on the env, so all 61 stayed green even with the
+        # LC_ALL line deleted outright (Ayala proved this live: mutated a
+        # throwaway copy, deleting exactly that line, reran the full suite,
+        # 61/61 OK -- the fix was defended by nothing). Pins hostile ambient
+        # LC_ALL="C"/LANG="C" as explicit hermetic_env() overrides (never
+        # the host's real locale, so this can't accidentally pass for the
+        # same reason the old suite did) and checks every one of the three
+        # tmux subcommands TmuxBackend issues, not just one.
+        log = write_tmp("")
+        listing_path = write_tmp(
+            f"work:0.0{iterm_ctl.SEP}%9{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}s{iterm_ctl.SEP}zsh{iterm_ctl.SEP}/tmp\n"
+        )
+        screen_path = write_tmp("hi\n")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(
+            ITERMON_BACKEND="tmux",
+            ITERMON_FAKE_TMUX_LOG=log,
+            ITERMON_FAKE_TMUX_LISTING=listing_path,
+            ITERMON_FAKE_TMUX_SCREEN=screen_path,
+            LC_ALL="C",
+            LANG="C",
+        ):
+            iterm_ctl.list_sessions()
+            iterm_ctl.send_text(session, "hi", enter=True)
+            iterm_ctl.read_contents(session)
+        lc_alls = _tmux_call_lc_all(log)
+        # list-panes, send-keys (text) + send-keys (Enter), capture-pane.
+        self.assertEqual(len(lc_alls), 4)
+        for value in lc_alls:
+            self.assertEqual(value, "C.UTF-8")
 
     def test_tmux_missing_from_path_raises_clear_error_naming_tmux(self):
         # spec 3.4: tmux backend selected, tmux not on PATH -> clear
@@ -991,6 +1046,31 @@ class G9TmuxBackendLive(unittest.TestCase):
             self.assertTrue(s.name)
             self.assertTrue(s.job)  # "sleep"
             self.assertTrue(s.cwd)
+
+    def test_lc_all_fix_hostile_ambient_locale_still_lists_every_pane(self):
+        # BACKLOG round 4 (Ayala's finding) -- the live half of the guard;
+        # see G8TmuxBackendHermetic.test_every_tmux_invocation_gets_lc_all_c
+        # _utf8 for the hermetic half. Not a numbered spec AC -- this pins a
+        # bug found and fixed during implementation (2026-08-07 worklog),
+        # not a spec-mandated behavior, so it doesn't reuse an AC-N name.
+        #
+        # Forces a real, hostile, non-UTF-8-declaring locale (LC_ALL=C,
+        # LC_CTYPE=C, LANG=C -- what a bare SSH session or a cron job
+        # typically hands a script, exactly this feature's own target
+        # environment) onto the *ambient* env that _tmux_env() starts from
+        # (dict(os.environ)) before forcing LC_ALL=C.UTF-8, and proves a
+        # real tmux server still hands back all three real panes -- not the
+        # silent, no-error empty list this bug produces (Ayala's live
+        # reproduction: 0 != 3, no exception, no stderr -- indistinguishable
+        # from "no sessions" to a caller).
+        with hermetic_env(
+            path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
+            TMUX_TMPDIR=self.tmux_tmpdir,
+            LC_ALL="C", LC_CTYPE="C", LANG="C",
+        ):
+            sessions = iterm_ctl.list_sessions()
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual({s.name for s in sessions}, {"first", "second", "third"})
 
     def test_ac7_send_then_read_round_trips_through_the_real_cli(self):
         # Goes through iterm_ctl.main() -- the real CLI entry point, argv and
