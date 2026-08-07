@@ -393,24 +393,39 @@ def _set_cli_backend(value: str) -> None:
 def _resolve_backend_name() -> str:
     """Resolution order (spec 2.3): explicit --backend flag, then
     $ITERMON_BACKEND, then the platform default (darwin -> iterm2, else
-    tmux). 'auto' -- whether it's the flag's default or an explicit
-    `--backend auto` -- always falls through to the next source; it is a
-    resolution mode, not a fourth concrete backend. An unknown name from
-    either source is fail-closed: a RuntimeError naming the valid choices,
-    never a silent fallback. Re-resolved on every call (cheap: no I/O) rather
-    than cached once per process, so it stays correct across hermetic_env()'s
+    tmux). 'auto' -- whether it's the flag's default, an explicit
+    `--backend auto`, or `$ITERMON_BACKEND=auto` -- always falls through to
+    the next source; it is a resolution mode, not a fourth concrete backend.
+    An empty or whitespace-only $ITERMON_BACKEND is treated the same as
+    unset (falls through), since that's how wrapper scripts/CI commonly
+    express "not set". An unknown, non-empty, non-'auto' name from either
+    source is fail-closed: a RuntimeError naming the valid choices, never a
+    silent fallback. Re-resolved on every call (cheap: no I/O) rather than
+    cached once per process, so it stays correct across hermetic_env()'s
     per-test os.environ swaps instead of depending on call order."""
     if _CLI_BACKEND in _VALID_BACKENDS:
         return _CLI_BACKEND
     env = os.environ.get("ITERMON_BACKEND")
     if env is not None:
-        if env not in _VALID_BACKENDS:
-            raise RuntimeError(
-                f"unknown backend {env!r} in $ITERMON_BACKEND -- valid backends: "
-                + ", ".join(_VALID_BACKENDS)
-                + " (or 'auto')"
-            )
-        return env
+        env = env.strip()
+        # Empty/whitespace-only and 'auto' both mean "not pinned by the env
+        # var either" -- fall through to the platform default, same as the
+        # flag's own 'auto'. An empty string is how wrapper scripts/CI commonly
+        # express "unset" (ITERMON_BACKEND=$SOMETHING with $SOMETHING unset),
+        # and failing hard on that -- or on the literal value this module's own
+        # error message and docstring advertise as valid -- would turn this
+        # additive release into a breaking one for anyone who follows either.
+        # A genuine typo (non-empty, not 'auto', not a known backend) still
+        # fails closed below: silently falling back to the other backend on a
+        # misspelled name would be worse than a loud error.
+        if env and env != "auto":
+            if env not in _VALID_BACKENDS:
+                raise RuntimeError(
+                    f"unknown backend {env!r} in $ITERMON_BACKEND -- valid backends: "
+                    + ", ".join(_VALID_BACKENDS)
+                    + " (or 'auto')"
+                )
+            return env
     return "iterm2" if sys.platform == "darwin" else "tmux"
 
 
