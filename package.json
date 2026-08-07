@@ -1,7 +1,7 @@
 {
   "name": "itermon",
   "version": "1.2.0",
-  "description": "Monitor and control iTerm2 sessions from a CLI, a local web admin, or an MCP server, with a cron scheduler for recurring sends.",
+  "description": "Monitor and control terminal sessions from a CLI, a local web admin, or an MCP server -- iTerm2 on macOS, tmux everywhere else (including over SSH on Linux) -- with a cron scheduler for recurring sends.",
   "scripts": {
     "start": "bash start.sh",
     "start:open": "bash start.sh --open",
@@ -17,6 +17,7 @@
   },
   "bin": {
     "iterm-ctl": "iterm_ctl.py",
+    "itermon": "iterm_ctl.py",
     "iterm-admin": "start.sh",
     "itermon-mcp": "iterm_mcp.py"
   },
@@ -31,9 +32,6 @@
   "engines": {
     "node": ">=16"
   },
-  "os": [
-    "darwin"
-  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/KuronokiCorp/usageMonitoring.git"
@@ -48,7 +46,10 @@
     "monitoring",
     "cron",
     "mcp",
-    "model-context-protocol"
+    "model-context-protocol",
+    "tmux",
+    "ssh",
+    "linux"
   ],
   "license": "MIT"
 }
