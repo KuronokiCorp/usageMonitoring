@@ -832,6 +832,52 @@ class G8TmuxBackendHermetic(unittest.TestCase):
         self.assertIn("iterm2", msg)
         self.assertIn("tmux", msg)
 
+    # -- $ITERMON_BACKEND value handling (BACKLOG round 2 finding): the code
+    # used to reject ITERMON_BACKEND=auto while its own docstring ("'auto' --
+    # whether it's the flag's default or an explicit --backend auto --
+    # always falls through") and its own error message ("...(or 'auto')")
+    # both said it was valid. Four cases pin the fixed contract: 'auto' and
+    # empty/whitespace both defer to the platform default (unset and 'auto'
+    # are the same resolution mode, not two different things); a genuine
+    # typo still fails closed. --
+
+    def test_backend_env_var_auto_falls_through_to_platform_default(self):
+        # ITERMON_BACKEND=auto must resolve exactly like the flag's own
+        # 'auto' (or the flag not being passed at all): not pinned, defer to
+        # $ITERMON_BACKEND's *next* source -- which, with the env var itself
+        # being the thing set to 'auto', is the platform default.
+        with hermetic_env(ITERMON_BACKEND="auto"):
+            resolved = iterm_ctl._resolve_backend_name()
+        self.assertEqual(resolved, "iterm2" if sys.platform == "darwin" else "tmux")
+
+    def test_backend_env_var_empty_string_is_treated_as_unset(self):
+        # An empty value is how wrapper scripts and CI commonly express "not
+        # set" (ITERMON_BACKEND=$SOMETHING with $SOMETHING unset) -- must
+        # fall through to the platform default, not fail closed like a typo.
+        with hermetic_env(ITERMON_BACKEND=""):
+            resolved = iterm_ctl._resolve_backend_name()
+        self.assertEqual(resolved, "iterm2" if sys.platform == "darwin" else "tmux")
+
+    def test_backend_env_var_whitespace_only_is_also_treated_as_unset(self):
+        # A trailing newline out of a wrapper script's `$(...)` capture, or a
+        # stray space from a shell profile, should not be a crash.
+        with hermetic_env(ITERMON_BACKEND="  \n"):
+            resolved = iterm_ctl._resolve_backend_name()
+        self.assertEqual(resolved, "iterm2" if sys.platform == "darwin" else "tmux")
+
+    def test_backend_env_var_genuine_typo_still_fails_closed(self):
+        # 'auto' and empty/whitespace are the only forgiven spellings -- a
+        # real typo of a real backend name must still raise. Silently
+        # falling back to the other backend on a misspelled name would be a
+        # worse failure mode than a loud error naming the valid choices.
+        with hermetic_env(ITERMON_BACKEND="tmuxx"):
+            with self.assertRaises(RuntimeError) as ctx:
+                iterm_ctl._resolve_backend_name()
+        msg = str(ctx.exception).lower()
+        self.assertIn("tmuxx", msg)
+        self.assertIn("iterm2", msg)
+        self.assertIn("tmux", msg)
+
     def test_cli_backend_flag_selects_tmux_without_env_var(self):
         # The --backend flag itself (spec 2.3, item 1 in the resolution
         # order) -- exercised through the real CLI entry point (main()),
