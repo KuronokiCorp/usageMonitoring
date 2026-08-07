@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Fake `tmux` for itermon's hermetic test suite (see tests/README.md).
+
+Placed at the front of PATH the same way tests/fake/osascript and
+tests/fake/ps are, so TmuxBackend's `subprocess.run(["tmux", ...])` calls
+hit this instead of a real tmux server -- this is what lets the tmux-backend
+seam tests (G8TmuxBackendHermetic in tests/run_tests.py) run on any machine,
+tmux installed or not, with no real terminal involved.
+
+Contract with the real tmux this stands in for:
+  - Routes on argv[0] (the subcommand: list-panes / send-keys / capture-pane),
+    the same three tmux invocations iterm_ctl.TmuxBackend ever makes.
+  - Logs every invocation's full argv (one JSON array per line) to the file
+    named by $ITERMON_FAKE_TMUX_LOG, if set -- this is how tests assert on
+    the *exact argv list* TmuxBackend built (in particular, that `-l` and
+    `--` are present for send-keys -- BACKLOG 0e, non-negotiable).
+
+Real tmux's live-server behavior (docs/spikes/2026-08-06-terminal-universality
+-spike.md, section 2) is what tests/run_tests.py's G9TmuxBackendLive class
+verifies separately, against an actual throwaway tmux server -- this fake
+only proves the seam builds the right argv and parses the right shape.
+"""
+import json
+import os
+import sys
+
+
+def _log(argv) -> None:
+    log_path = os.environ.get("ITERMON_FAKE_TMUX_LOG")
+    if not log_path:
+        return
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(argv) + "\n")
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    _log(argv)
+
+    if not argv:
+        sys.stderr.write("fake tmux: no subcommand given\n")
+        return 1
+
+    sub = argv[0]
+
+    if sub == "list-panes":
+        if os.environ.get("ITERMON_FAKE_TMUX_NO_SERVER"):
+            sys.stderr.write("no server running on /tmp/fake-itermon.sock\n")
+            return 1
+        err = os.environ.get("ITERMON_FAKE_TMUX_ERROR")
+        if err:
+            sys.stderr.write(err + "\n")
+            return 1
+        listing_path = os.environ.get("ITERMON_FAKE_TMUX_LISTING")
+        if listing_path:
+            with open(listing_path, encoding="utf-8") as f:
+                sys.stdout.write(f.read())
+        return 0
+
+    if sub in ("send-keys", "capture-pane"):
+        bad_pane = os.environ.get("ITERMON_FAKE_TMUX_BAD_PANE")
+        if bad_pane and bad_pane in argv:
+            sys.stderr.write(f"can't find pane: {bad_pane}\n")
+            return 1
+        if sub == "capture-pane":
+            screen_path = os.environ.get("ITERMON_FAKE_TMUX_SCREEN")
+            if screen_path:
+                with open(screen_path, encoding="utf-8") as f:
+                    sys.stdout.write(f.read())
+        return 0
+
+    sys.stderr.write(f"fake tmux: unrecognized subcommand {sub!r}, refusing to guess\n")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

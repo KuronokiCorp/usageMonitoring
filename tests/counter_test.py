@@ -105,12 +105,12 @@ MUTATIONS = [
         file="iterm_ctl.py",
         group="G4 (send_text newline)",
         old=(
-            "def send_text(session: Session, text: str, enter: bool) -> None:\n"
-            "    newline = \"yes\" if enter else \"no\"\n"
+            "    def send_text(self, session: Session, text: str, enter: bool) -> None:\n"
+            "        newline = \"yes\" if enter else \"no\"\n"
         ),
         new=(
-            "def send_text(session: Session, text: str, enter: bool) -> None:\n"
-            "    newline = \"no\" if enter else \"yes\"\n"
+            "    def send_text(self, session: Session, text: str, enter: bool) -> None:\n"
+            "        newline = \"no\" if enter else \"yes\"\n"
         ),
     ),
     dict(
@@ -126,6 +126,21 @@ MUTATIONS = [
             "                if fg_comm:\n"
             "                    continue\n"
             "                fg_pid, fg_comm = pid, comm\n"
+        ),
+    ),
+    dict(
+        id="M6",
+        file="iterm_ctl.py",
+        group="G1 (resolve_targets name: search vs match, BACKLOG 3a)",
+        old=(
+            "    if target.startswith(\"name:\"):\n"
+            "        pat = re.compile(target[5:], re.IGNORECASE)\n"
+            "        return [s for s in sessions if pat.search(s.name)]\n"
+        ),
+        new=(
+            "    if target.startswith(\"name:\"):\n"
+            "        pat = re.compile(target[5:], re.IGNORECASE)\n"
+            "        return [s for s in sessions if pat.match(s.name)]\n"
         ),
     ),
     dict(
