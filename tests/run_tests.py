@@ -23,9 +23,11 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -40,7 +42,7 @@ def _ensure_fakes_executable() -> None:
     it. Don't make the suite's greenness depend on someone remembering to
     `chmod +x` by hand: assert-and-fix it once, up front, so a fresh clone
     (Dida's machine included) is self-healing on this one axis."""
-    for name in ("osascript", "ps"):
+    for name in ("osascript", "ps", "tmux"):
         path = os.path.join(FAKE_DIR, name)
         mode = os.stat(path).st_mode
         wanted = mode | 0o111
@@ -60,6 +62,19 @@ import iterm_ctl  # noqa: E402  (import after sys.path setup, on purpose)
 # component are platform-dependent).
 NO_TOOLS_DIR = tempfile.mkdtemp(prefix="itermon-no-tools-")
 
+# The real, ambient $PATH, captured once here -- at import time, before
+# main() (bottom of this file) ever wraps the whole test run in one outer
+# hermetic_env() that pins PATH to FAKE_DIR for the duration. G9TmuxBackendLive
+# needs the *real* tmux, reachable on the *real* PATH, for its raw
+# subprocess.run() setup/teardown calls (new-session/kill-window/kill-server);
+# `dict(os.environ)` captured *inside* setUpClass would instead see whatever
+# hermetic PATH the outer wrapping had already installed by then, and hand
+# tests/fake/tmux a real socket to argue with. hermetic_env(path=...) itself
+# doesn't have this problem (it always builds PATH fresh from its `path`
+# argument, never from ambient os.environ) -- this constant is only needed
+# for the handful of call sites that build a subprocess env by hand.
+REAL_PATH = os.environ.get("PATH", "")
+
 # The fakes are plain `#!/usr/bin/env python3` scripts. hermetic_env() pins
 # PATH to FAKE_DIR *only*, so `env` has no way to resolve `python3` unless we
 # also hand it the running interpreter's own directory -- appended AFTER
@@ -75,7 +90,7 @@ def _assert_interp_dir_has_no_real_tools() -> None:
     a real `osascript` or `ps`. On every sane Python install it won't -- but
     "must not" beats "probably doesn't", so this checks and refuses to run
     rather than silently widening the safe surface."""
-    for name in ("osascript", "ps"):
+    for name in ("osascript", "ps", "tmux"):
         if os.path.exists(os.path.join(INTERP_DIR, name)):
             raise RuntimeError(
                 f"refusing to run: interpreter directory {INTERP_DIR!r} contains a "
@@ -131,9 +146,20 @@ def hermetic_env(path=FAKE_DIR, **extra):
     inherit this environment, so they can only ever reach the fakes (or
     nothing), never a real osascript or ps."""
     saved = dict(os.environ)
+    # Build the new env from the *current* (pre-clear) os.environ before
+    # touching it -- _build_hermetic_env()'s HOME/LANG/... passthrough reads
+    # os.environ live, so calling it after os.environ.clear() would hand it
+    # an already-empty ambient and silently pass through nothing every time
+    # (found while building the tmux backend tests: tmux's -F engine decides
+    # UTF-8-safe output per client by checking LANG/LC_ALL, and a missing
+    # LANG made it mangle SEP -- see docs/worklog/usagemonitoring-developer/
+    # 2026-08-07.md). This also makes nesting correct: an inner
+    # hermetic_env() call now sees the outer one's env as its "ambient",
+    # exactly as a real nested environment would.
+    new_env = _build_hermetic_env(path=path, **extra)
     try:
         os.environ.clear()
-        os.environ.update(_build_hermetic_env(path=path, **extra))
+        os.environ.update(new_env)
         yield
     finally:
         os.environ.clear()
@@ -159,6 +185,16 @@ class G1ResolveTargets(unittest.TestCase):
             iterm_ctl.Session("1.1.1", "AAAA1111", "/dev/ttys001", "shell one"),
             iterm_ctl.Session("1.1.2", "BBBB2222", "/dev/ttys002", "daily-log watcher"),
             iterm_ctl.Session("2.1.1", "CCCC3333", "/dev/ttys003", "vim session.app"),
+            # BACKLOG 3a fixture (spec section 5.3): "backup" sits in the
+            # MIDDLE of this name, not the start -- a case where re.search
+            # finds it and re.match (anchored at position 0) does not. Every
+            # other fixture name above is effectively ^-anchored against the
+            # patterns used on it, which is exactly the coverage hole 3a
+            # closes: without this session, mutating `pat.search` ->
+            # `pat.match` in the name: branch leaves the suite green. Chosen
+            # to avoid "daily" so it does not also change what the pre-existing
+            # DAILY-targeted assertions below match.
+            iterm_ctl.Session("3.1.1", "EEEE5555", "/dev/ttys005", "run backup task"),
         ]
 
     def test_exact_index_matches_only_that_session(self):
@@ -188,6 +224,15 @@ class G1ResolveTargets(unittest.TestCase):
         # anchored regex that shouldn't match anything
         got = iterm_ctl.resolve_targets(self.sessions, "name:^DAILY$", False)
         self.assertEqual(got, [])
+
+    def test_name_prefix_is_unanchored_search_not_match(self):
+        # BACKLOG 3a (spec section 5.3): `name:REGEX` ships and is documented
+        # as an *unanchored search*; `pat.search` in the code is correct and
+        # must stay. This is the coverage hole's fix -- a fixture ("run
+        # backup task") whose pattern ("backup") sits in the middle, where
+        # search finds it and match (anchored at position 0) does not.
+        got = iterm_ctl.resolve_targets(self.sessions, "name:backup", False)
+        self.assertEqual([s.id for s in got], ["EEEE5555"])
 
     def test_bare_string_is_case_insensitive_substring_not_regex(self):
         got = iterm_ctl.resolve_targets(self.sessions, "DAILY", False)
@@ -221,17 +266,49 @@ class G1ResolveTargets(unittest.TestCase):
         self.assertEqual(got, [])
 
     def test_index_shape_is_exactly_three_dotted_numbers(self):
-        # "2.1" (two parts) and "2.1.1.1" (four parts) must NOT take the
-        # index-equality branch, even when a session's .index literally
-        # equals the target string -- if they took the index branch this
-        # would find that session; pinned here to prove they don't.
+        # BRANCH 1 (the \d+.\d+.\d+ *shape* fast path) must not fire for a
+        # 2-part or 4-part target, even against a session whose .index is
+        # unrelated -- proven with fixtures that also do NOT equal the
+        # target, so this exercises branch 1's shape gate specifically and
+        # not the separate exact-match branch tested below.
+        two_part_shape = [iterm_ctl.Session("9.9.9", "X", "/dev/ttysA", "no-match-here")]
+        got = iterm_ctl.resolve_targets(two_part_shape, "2.1", False)
+        self.assertEqual(got, [])
+
+        four_part_shape = [iterm_ctl.Session("9.9.9", "Y", "/dev/ttysB", "no-match-here")]
+        got = iterm_ctl.resolve_targets(four_part_shape, "2.1.1.1", False)
+        self.assertEqual(got, [])
+
+    def test_non_three_part_index_or_id_matches_via_exact_match_branch(self):
+        # spec docs/specs/tmux-universal-backend.md section 5.1 (BACKLOG 0c)
+        # adds a new branch -- exact string match on s.index or s.id --
+        # positioned after id:/tty:/name: and before the bare-substring
+        # fallback. It is deliberately NOT gated by the \d+.\d+.\d+ shape
+        # check (that gate belongs to branch 1 only, which exists purely to
+        # give iTerm2's real index format a fast exact path). This is what
+        # lets a tmux user type a bare "work:2.0" (session:window.pane) or a
+        # bare "%3" (pane id) and hit the right pane (AC-13).
+        #
+        # Consequence, deliberate and spec-authorized: a session whose
+        # .index happens to be a non-3-part string -- impossible for a real
+        # iTerm2 session, but exactly the tmux "session:window.pane" shape --
+        # now matches when the target equals it exactly. Before 5.1 landed
+        # (2026-08-07) this test asserted the opposite (`== []`) for these
+        # same two shapes; see docs/worklog/usagemonitoring-developer/
+        # 2026-08-07.md for why that assertion changed rather than being
+        # dropped silently.
         two_part = [iterm_ctl.Session("2.1", "X", "/dev/ttysA", "no-match-here")]
         got = iterm_ctl.resolve_targets(two_part, "2.1", False)
-        self.assertEqual(got, [])
+        self.assertEqual(got, two_part)
 
         four_part = [iterm_ctl.Session("2.1.1.1", "Y", "/dev/ttysB", "no-match-here")]
         got = iterm_ctl.resolve_targets(four_part, "2.1.1.1", False)
-        self.assertEqual(got, [])
+        self.assertEqual(got, four_part)
+
+        # Same branch, the .id side -- this is the "%3" bare-pane-id case.
+        by_id = [iterm_ctl.Session("3.9.9", "%3", "/dev/ttysC", "no-match-here")]
+        got = iterm_ctl.resolve_targets(by_id, "%3", False)
+        self.assertEqual(got, by_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -629,6 +706,315 @@ class G6MCPWireProtocol(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# G8 -- tmux backend seam, hermetic (docs/specs/tmux-universal-backend.md
+# section 3, BACKLOG 0c/0e), using tests/fake/tmux the same way G1-G6 use
+# tests/fake/osascript. Runs on any machine, tmux installed or not.
+# --------------------------------------------------------------------------- #
+def _tmux_calls(log_path: str) -> list:
+    with open(log_path, encoding="utf-8") as f:
+        lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    return [json.loads(ln) for ln in lines]
+
+
+class G8TmuxBackendHermetic(unittest.TestCase):
+    def test_list_parses_all_six_fields(self):
+        SEP = iterm_ctl.SEP
+        listing = (
+            f"work:2.0{SEP}%3{SEP}/dev/ttys021{SEP}editor{SEP}vim{SEP}/Users/x/proj\n"
+        )
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LISTING=listing_path):
+            sessions = iterm_ctl.list_sessions()
+        self.assertEqual(len(sessions), 1)
+        s = sessions[0]
+        self.assertEqual(s.index, "work:2.0")
+        self.assertEqual(s.id, "%3")
+        self.assertEqual(s.tty, "/dev/ttys021")
+        self.assertEqual(s.name, "editor")
+        self.assertEqual(s.job, "vim")
+        self.assertEqual(s.cwd, "/Users/x/proj")
+
+    def test_no_server_running_is_empty_list_not_an_error(self):
+        # spec 3.1: "no server running" on stderr with non-zero exit is NOT
+        # an error -- it maps to an empty list, same as iTerm2 w/ no windows.
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_NO_SERVER="1"):
+            sessions = iterm_ctl.list_sessions()
+        self.assertEqual(sessions, [])
+
+    def test_socket_dir_never_created_is_also_empty_list_not_an_error(self):
+        # A second, real, live-verified "no server" message (see
+        # G9TmuxBackendLive.test_ac11): a *fresh* $TMUX_TMPDIR that has never
+        # had a server on it produces "error connecting to <path> (No such
+        # file or directory)", not "no server running on <path>" -- same
+        # underlying condition (no server), different wording depending on
+        # whether the socket path was ever used before. Both must map to [].
+        with hermetic_env(
+            ITERMON_BACKEND="tmux",
+            ITERMON_FAKE_TMUX_ERROR="error connecting to /tmp/x/tmux-501/default (No such file or directory)",
+        ):
+            sessions = iterm_ctl.list_sessions()
+        self.assertEqual(sessions, [])
+
+    def test_other_stderr_raises_runtime_error(self):
+        with hermetic_env(
+            ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_ERROR="boom: something else broke"
+        ):
+            with self.assertRaises(RuntimeError):
+                iterm_ctl.list_sessions()
+
+    def test_send_text_uses_literal_dash_l_dash_dash(self):
+        # BACKLOG 0e -- non-negotiable (spec 3.2). Without -l, send-keys reads
+        # its argument as a KEY NAME, not text: the spike proved send-keys
+        # 'C-c' sends the Ctrl-C key and types nothing, while send-keys -l --
+        # 'C-c' types the three characters. This fails if either token is
+        # dropped, or if their order/position changes.
+        log = write_tmp("")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LOG=log):
+            iterm_ctl.send_text(session, "C-c", enter=False)
+        calls = _tmux_calls(log)
+        self.assertEqual(calls, [["send-keys", "-t", "%9", "-l", "--", "C-c"]])
+
+    def test_send_text_with_enter_is_two_calls_text_then_enter(self):
+        log = write_tmp("")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LOG=log):
+            iterm_ctl.send_text(session, "git status", enter=True)
+        calls = _tmux_calls(log)
+        self.assertEqual(
+            calls,
+            [
+                ["send-keys", "-t", "%9", "-l", "--", "git status"],
+                ["send-keys", "-t", "%9", "Enter"],
+            ],
+        )
+
+    def test_empty_text_no_enter_is_a_no_op_no_tmux_call_at_all(self):
+        log = write_tmp("")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LOG=log):
+            iterm_ctl.send_text(session, "", enter=False)
+        self.assertEqual(_tmux_calls(log), [])
+
+    def test_empty_text_with_enter_sends_only_enter(self):
+        # Preserves iterm_web.py's "send a bare newline" call (iterm_web.py's
+        # run_job()/send_to_targets() send text="" enter=True to submit).
+        log = write_tmp("")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LOG=log):
+            iterm_ctl.send_text(session, "", enter=True)
+        self.assertEqual(_tmux_calls(log), [["send-keys", "-t", "%9", "Enter"]])
+
+    def test_read_contents_uses_capture_pane(self):
+        log = write_tmp("")
+        screen = write_tmp("$ echo hi\nhi\n")
+        session = iterm_ctl.Session("work:0.0", "%9", "/dev/ttys001", "s")
+        with hermetic_env(
+            ITERMON_BACKEND="tmux", ITERMON_FAKE_TMUX_LOG=log, ITERMON_FAKE_TMUX_SCREEN=screen
+        ):
+            got = iterm_ctl.read_contents(session)
+        self.assertEqual(got, "$ echo hi\nhi\n")
+        self.assertEqual(_tmux_calls(log), [["capture-pane", "-p", "-t", "%9"]])
+
+    def test_tmux_missing_from_path_raises_clear_error_naming_tmux(self):
+        # spec 3.4: tmux backend selected, tmux not on PATH -> clear
+        # RuntimeError, never a traceback or a silent empty list.
+        with hermetic_env(path=NO_TOOLS_DIR, ITERMON_BACKEND="tmux"):
+            with self.assertRaises(RuntimeError) as ctx:
+                iterm_ctl.list_sessions()
+        self.assertIn("tmux", str(ctx.exception).lower())
+
+    def test_unknown_backend_env_var_is_fail_closed_not_a_silent_fallback(self):
+        with hermetic_env(ITERMON_BACKEND="notabackend"):
+            with self.assertRaises(RuntimeError) as ctx:
+                iterm_ctl.list_sessions()
+        msg = str(ctx.exception).lower()
+        self.assertIn("iterm2", msg)
+        self.assertIn("tmux", msg)
+
+    def test_cli_backend_flag_selects_tmux_without_env_var(self):
+        # The --backend flag itself (spec 2.3, item 1 in the resolution
+        # order) -- exercised through the real CLI entry point (main()),
+        # with no $ITERMON_BACKEND set at all, proving the flag alone is
+        # sufficient. main() stashes the flag in a module-level override, so
+        # this registers a cleanup to reset it -- otherwise a later test in
+        # this same process would silently inherit "tmux".
+        self.addCleanup(iterm_ctl._set_cli_backend, None)
+        listing_path = write_tmp(
+            f"work:0.0{iterm_ctl.SEP}%0{iterm_ctl.SEP}/dev/ttys009{iterm_ctl.SEP}w{iterm_ctl.SEP}zsh{iterm_ctl.SEP}/tmp\n"
+        )
+        result = {}
+        with hermetic_env(ITERMON_FAKE_TMUX_LISTING=listing_path):
+            _capture_stdout(lambda: result.update(rc=iterm_ctl.main(["list", "--backend", "tmux"])))
+        self.assertEqual(result["rc"], 0)
+
+    def test_auto_never_prefers_tmux_on_darwin_even_with_dollar_tmux_set(self):
+        # spec 2.3's ruling: auto on macOS always means iterm2, even inside a
+        # tmux pane ($TMUX set). Only meaningful to assert on darwin itself;
+        # skipped elsewhere since the platform default there is tmux anyway.
+        if sys.platform != "darwin":
+            self.skipTest("darwin-only: this pins the macOS-specific ruling")
+        listing_path = write_tmp("")  # empty iTerm2 listing -> []
+        with hermetic_env(TMUX="/private/tmp/tmux-501/default,1234,0"):
+            sessions = iterm_ctl.list_sessions()  # must go to iterm2, not tmux
+        self.assertEqual(sessions, [])  # iterm2 fake with no ITERMON_FAKE_LISTING
+
+
+# --------------------------------------------------------------------------- #
+# G9 -- tmux backend, live (spec section 8 AC-6..AC-12). Real tmux 3.6a
+# against a throwaway, private-socket server -- never the operator's own tmux
+# (same discipline as docs/spikes/2026-08-06-terminal-universality-spike.md
+# and Dida's iTerm2 practice). Skips cleanly when tmux is not installed, and
+# never touches the default socket: isolation comes from pointing
+# $TMUX_TMPDIR at a fresh, throwaway directory for the whole class, which is
+# where tmux resolves its (unqualified, no -S/-L given) default socket path
+# from (see `tmux(1)`, TMUX_TMPDIR) -- so every plain `tmux ...` call the
+# backend itself makes (spec section 3 never mentions -S) still lands on our
+# private server, not the operator's.
+# --------------------------------------------------------------------------- #
+TMUX_BIN = shutil.which("tmux")
+
+
+def _short_tmux_tmpdir(prefix: str) -> str:
+    """A throwaway dir for $TMUX_TMPDIR, rooted at /tmp rather than
+    tempfile.gettempdir() -- on macOS the latter is $TMPDIR, a long
+    per-process path under /private/var/folders/..., and tmux appends
+    "/tmux-<uid>/default" to whatever TMUX_TMPDIR is to build its actual
+    AF_UNIX socket path. That combination silently exceeds the ~104-byte
+    sockaddr_un limit and tmux fails with "File name too long" -- not a
+    permissions or hermeticity problem, just a path-length one. /tmp is
+    short (and itself a symlink on macOS, but the *string* passed to
+    bind() is what's length-limited, not its resolved target)."""
+    return tempfile.mkdtemp(prefix=prefix, dir="/tmp")
+
+
+@unittest.skipUnless(shutil.which("tmux"), "tmux not installed -- skipping live tmux backend tests")
+class G9TmuxBackendLive(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmux_tmpdir = _short_tmux_tmpdir("itermon-tmux-live-")
+        cls.env = dict(os.environ)
+        cls.env["PATH"] = REAL_PATH  # see REAL_PATH's comment -- ambient os.environ
+                                      # here may already be inside main()'s outer
+                                      # hermetic_env(), which would otherwise hand
+                                      # this real `tmux new-session` call to the fake.
+        cls.env["TMUX_TMPDIR"] = cls.tmux_tmpdir
+        cls.env.pop("TMUX", None)  # never inherit "we're already inside a tmux" state
+        # Three windows in one throwaway session, matching the spike's own
+        # id-stability experiment (spike section 2.2).
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", "live", "-n", "first", "sleep 300"],
+            env=cls.env, check=True,
+        )
+        subprocess.run(
+            ["tmux", "new-window", "-t", "live", "-n", "second", "sleep 300"],
+            env=cls.env, check=True,
+        )
+        subprocess.run(
+            ["tmux", "new-window", "-t", "live", "-n", "third", "sleep 300"],
+            env=cls.env, check=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(["tmux", "kill-server"], env=cls.env, capture_output=True)
+        shutil.rmtree(cls.tmux_tmpdir, ignore_errors=True)
+
+    def _list(self):
+        with hermetic_env(
+            path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux", TMUX_TMPDIR=self.tmux_tmpdir
+        ):
+            return iterm_ctl.list_sessions()
+
+    def test_ac6_list_shows_every_pane_fully_populated(self):
+        sessions = self._list()
+        self.assertEqual(len(sessions), 3)
+        for s in sessions:
+            self.assertTrue(s.index)
+            self.assertRegex(s.id, r"^%\d+$")
+            self.assertTrue(s.tty)
+            self.assertTrue(s.name)
+            self.assertTrue(s.job)  # "sleep"
+            self.assertTrue(s.cwd)
+
+    def test_ac7_send_then_read_round_trips_through_the_real_cli(self):
+        # Goes through iterm_ctl.main() -- the real CLI entry point, argv and
+        # all -- not the internal functions directly. Backend selection here
+        # comes from $ITERMON_BACKEND (set by hermetic_env below), not
+        # --backend, so this test never touches the module-level
+        # _CLI_BACKEND override and can't leak state into a later test.
+        sessions = self._list()
+        target = next(s for s in sessions if s.name == "first")
+        marker = "ITERMON_G9_MARKER_1729"
+        result = {}
+        with hermetic_env(path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
+                           TMUX_TMPDIR=self.tmux_tmpdir):
+            _capture_stdout(
+                lambda: result.update(rc=iterm_ctl.main(["send", "id:" + target.id, f"echo {marker}"]))
+            )
+            self.assertEqual(result["rc"], 0)
+            time.sleep(0.3)
+            screen = iterm_ctl.read_contents(
+                iterm_ctl.Session(target.index, target.id, target.tty, target.name)
+            )
+        self.assertIn(marker, screen)
+
+    def test_ac8_literal_mode_counter_test_c_dash_c_is_typed_not_sent_as_ctrl_c(self):
+        sessions = self._list()
+        target = next(s for s in sessions if s.name == "second")
+        with hermetic_env(path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
+                           TMUX_TMPDIR=self.tmux_tmpdir):
+            session = iterm_ctl.Session(target.index, target.id, target.tty, target.name)
+            iterm_ctl.send_text(session, "C-c", enter=False)
+            time.sleep(0.3)
+            screen = iterm_ctl.read_contents(session)
+        # The three characters "C-c" must appear typed on the line -- if -l or
+        # -- were dropped, tmux would interpret 'C-c' as the Ctrl-C key
+        # instead, and nothing would be typed.
+        self.assertIn("C-c", screen)
+
+    def test_ac9_pane_id_survives_killing_a_neighbour(self):
+        before = {s.name: s.id for s in self._list()}
+        third_id = before["third"]
+        subprocess.run(["tmux", "kill-window", "-t", "live:second"], env=self.env, check=True)
+        after = self._list()
+        after_ids = {s.id for s in after}
+        self.assertIn(third_id, after_ids)
+        still_there = next(s for s in after if s.id == third_id)
+        self.assertEqual(still_there.name, "third")
+        # recreate "second" so later test methods (unordered by design, but
+        # unittest runs alphabetically -- ac9 sorts after ac8/ac7/ac6/ac12,
+        # before ac10) don't depend on running before this one.
+        subprocess.run(
+            ["tmux", "new-window", "-t", "live", "-n", "second", "sleep 300"],
+            env=self.env, check=True,
+        )
+
+    def test_ac10_send_and_read_against_missing_pane_id_is_the_existing_error_path(self):
+        bogus = iterm_ctl.Session("live:9.9", "%9999", "/dev/ttysXXX", "ghost")
+        with hermetic_env(path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
+                           TMUX_TMPDIR=self.tmux_tmpdir):
+            with self.assertRaises(RuntimeError):
+                iterm_ctl.read_contents(bogus)
+            with self.assertRaises(RuntimeError):
+                iterm_ctl.send_text(bogus, "hi", enter=True)
+
+    def test_ac11_no_server_at_all_list_prints_empty_and_exits_0(self):
+        empty_tmpdir = _short_tmux_tmpdir("itermon-tmux-live-empty-")
+        try:
+            with hermetic_env(path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
+                               TMUX_TMPDIR=empty_tmpdir):
+                sessions = iterm_ctl.list_sessions()
+                buf = _capture_stdout(lambda: iterm_ctl.print_table(
+                    sessions, empty_message=iterm_ctl.TmuxBackend.empty_message
+                ))
+            self.assertEqual(sessions, [])
+            self.assertIn("No tmux panes found", buf)
+        finally:
+            shutil.rmtree(empty_tmpdir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
 # --twice: determinism harness (spec section 4, G7)
 # --------------------------------------------------------------------------- #
 def _run_once():
@@ -682,6 +1068,8 @@ def _load_suite() -> unittest.TestSuite:
         G4SendReadAppleScript,
         G5AnnotateJobs,
         G6MCPWireProtocol,
+        G8TmuxBackendHermetic,
+        G9TmuxBackendLive,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     return suite
