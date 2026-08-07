@@ -38,11 +38,11 @@ must run your work inside tmux.** itermon can't attach to a terminal window
 directly unless that terminal is iTerm2 on macOS — for everything else, tmux
 is the thing itermon actually talks to, and tmux has to already be running
 with the session you want to monitor inside it. That's real friction, once,
-that you control; it isn't removable at any price (see
-`docs/spikes/2026-08-06-terminal-universality-spike.md` for why: half the
-terminal APIs that exist don't have a public scripting surface at all, and the
-best-designed one that does — Ghostty's — can list and send but has no way to
-read a screen).
+that you control; it isn't removable at any price. Most terminal emulators
+expose no public scripting surface at all, and the best-designed one that
+does — Ghostty's AppleScript dictionary, shipped in 1.3.0 — can list panes
+and send input but has no verb that can read a screen, which is the one
+thing a monitor has to do.
 
 If you're already on macOS with iTerm2, none of this matters — it works the
 way it always has, with no tmux involved. See
@@ -198,9 +198,9 @@ the same table `iterm-ctl backends` prints:
 > **On iTerm2, prefer `id:` for anything scripted.** iTerm renumbers windows
 > constantly (the frontmost becomes window 1), so `3.1.1` can point at a
 > different session minute to minute; the UUID never moves. **tmux pane ids
-> (`%N`) don't have this problem** — they're stable for the life of the tmux
-> server, proven by killing a neighbouring pane and confirming the survivor
-> keeps its id (see `docs/spikes/2026-08-06-terminal-universality-spike.md`).
+> (`%N`) don't have this problem** — a tmux pane keeps its `%id` for the life
+> of the tmux server, including when a neighbouring window is killed, which
+> is why the tmux backend does not have iTerm2's index-reordering problem.
 
 ### Windows, tabs, and split panes
 
