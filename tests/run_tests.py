@@ -947,9 +947,18 @@ class G9TmuxBackendLive(unittest.TestCase):
         cls.env["TMUX_TMPDIR"] = cls.tmux_tmpdir
         cls.env.pop("TMUX", None)  # never inherit "we're already inside a tmux" state
         # Three windows in one throwaway session, matching the spike's own
-        # id-stability experiment (spike section 2.2).
+        # id-stability experiment (spike section 2.2). "first" runs a real
+        # shell (sh -- POSIX, present everywhere this suite runs, and its
+        # arithmetic expansion is all AC-7 below needs) rather than `sleep`:
+        # a `sleep`-only pane never reads its stdin, so tmux's pty still
+        # locally echoes whatever `send-keys` sends -- proving a send
+        # happened, not that anything executed it (Dida's finding, round 2 of
+        # this review). "second"/"third" stay on `sleep 300`: AC-8 needs an
+        # inert pane to prove literal-mode delivery independent of anything a
+        # shell might do with the keystrokes, and AC-9 only needs a pane that
+        # survives, not one that runs anything in particular.
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", "live", "-n", "first", "sleep 300"],
+            ["tmux", "new-session", "-d", "-s", "live", "-n", "first", "sh"],
             env=cls.env, check=True,
         )
         subprocess.run(
@@ -989,21 +998,52 @@ class G9TmuxBackendLive(unittest.TestCase):
         # comes from $ITERMON_BACKEND (set by hermetic_env below), not
         # --backend, so this test never touches the module-level
         # _CLI_BACKEND override and can't leak state into a later test.
+        #
+        # Why `echo ITERMON_$((6*7))` and not a fixed marker string (Dida's
+        # finding, round 2 of this review): `assertIn(marker, screen)` with a
+        # literal marker is satisfied by the pty's own local echo of what we
+        # typed -- true whether or not anything downstream ever reads and
+        # runs it. Against the old "sleep 300"-only fixture this test would
+        # have stayed green even if send_text() typed into a black hole; it
+        # only ever caught real breakage because "first" happened to be
+        # proven separately, not because this assertion could tell execution
+        # from echo. Unevaluated arithmetic closes that gap for free: the
+        # bytes we send contain the literal substring "$((6*7))", never "42"
+        # -- so a line containing "ITERMON_42" cannot be produced by echo
+        # alone, only by a real shell reading the line and evaluating it.
         sessions = self._list()
         target = next(s for s in sessions if s.name == "first")
-        marker = "ITERMON_G9_MARKER_1729"
+        marker_cmd = "echo ITERMON_$((6*7))"
+        executed_marker = "ITERMON_42"
         result = {}
         with hermetic_env(path=os.path.dirname(TMUX_BIN), ITERMON_BACKEND="tmux",
                            TMUX_TMPDIR=self.tmux_tmpdir):
             _capture_stdout(
-                lambda: result.update(rc=iterm_ctl.main(["send", "id:" + target.id, f"echo {marker}"]))
+                lambda: result.update(rc=iterm_ctl.main(["send", "id:" + target.id, marker_cmd]))
             )
             self.assertEqual(result["rc"], 0)
             time.sleep(0.3)
             screen = iterm_ctl.read_contents(
                 iterm_ctl.Session(target.index, target.id, target.tty, target.name)
             )
-        self.assertIn(marker, screen)
+        lines = screen.splitlines()
+        # Sanity check that the send actually reached the pane at all (typed
+        # line, echoed literally, unevaluated -- present whether or not
+        # anything executes it).
+        self.assertTrue(
+            any("$((6*7))" in line for line in lines),
+            f"expected the typed command to appear literally, got: {lines!r}",
+        )
+        # The real assertion: a line that is NOT the typed line and DOES
+        # contain the evaluated result. Only a shell that actually ran the
+        # command can produce this -- pty echo of our input never can, since
+        # our input never contains "42".
+        output_lines = [ln for ln in lines if "$((6*7))" not in ln]
+        self.assertTrue(
+            any(executed_marker in line for line in output_lines),
+            f"expected an executed-output line containing {executed_marker!r} "
+            f"(distinct from the typed line) -- got: {lines!r}",
+        )
 
     def test_ac8_literal_mode_counter_test_c_dash_c_is_typed_not_sent_as_ctrl_c(self):
         sessions = self._list()
