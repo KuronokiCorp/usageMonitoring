@@ -144,6 +144,20 @@ MUTATIONS = [
         ),
     ),
     dict(
+        id="M7",
+        file="iterm_ctl.py",
+        group="G8 (_tmux_env LC_ALL fix, BACKLOG round 4, Ayala's finding)",
+        old=(
+            "    env = dict(os.environ)\n"
+            "    env[\"LC_ALL\"] = \"C.UTF-8\"\n"
+            "    return env\n"
+        ),
+        new=(
+            "    env = dict(os.environ)\n"
+            "    return env\n"
+        ),
+    ),
+    dict(
         id="M5",
         file="iterm_mcp.py",
         group="G6 (MCP unknown-tool soft error, bb119d8)",

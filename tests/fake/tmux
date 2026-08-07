@@ -10,10 +10,14 @@ tmux installed or not, with no real terminal involved.
 Contract with the real tmux this stands in for:
   - Routes on argv[0] (the subcommand: list-panes / send-keys / capture-pane),
     the same three tmux invocations iterm_ctl.TmuxBackend ever makes.
-  - Logs every invocation's full argv (one JSON array per line) to the file
-    named by $ITERMON_FAKE_TMUX_LOG, if set -- this is how tests assert on
-    the *exact argv list* TmuxBackend built (in particular, that `-l` and
-    `--` are present for send-keys -- BACKLOG 0e, non-negotiable).
+  - Logs every invocation (one JSON object per line -- {"argv": [...],
+    "env_LC_ALL": "..."}) to the file named by $ITERMON_FAKE_TMUX_LOG, if
+    set -- this is how tests assert both on the *exact argv list* TmuxBackend
+    built (in particular, that `-l` and `--` are present for send-keys --
+    BACKLOG 0e, non-negotiable) and, separately, on the *env* TmuxBackend
+    called us with (in particular, that LC_ALL is always "C.UTF-8" --
+    BACKLOG round 4, _tmux_env()'s fix; see tests/run_tests.py's
+    _tmux_calls()/_tmux_call_lc_all() for the two readers of this format).
 
 Real tmux's live-server behavior (docs/spikes/2026-08-06-terminal-universality
 -spike.md, section 2) is what tests/run_tests.py's G9TmuxBackendLive class
@@ -29,8 +33,12 @@ def _log(argv) -> None:
     log_path = os.environ.get("ITERMON_FAKE_TMUX_LOG")
     if not log_path:
         return
+    # env_LC_ALL records what TmuxBackend's _tmux_env() actually put in
+    # *our* environment (never what the caller's own ambient LC_ALL/LANG
+    # was) -- that's the whole point of the guard this exists for.
+    record = {"argv": argv, "env_LC_ALL": os.environ.get("LC_ALL")}
     with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(argv) + "\n")
+        f.write(json.dumps(record) + "\n")
 
 
 def main() -> int:
