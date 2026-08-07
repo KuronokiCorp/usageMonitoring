@@ -114,6 +114,15 @@ Rule to implement: **immediate actions may use `id:`; scheduled actions must not
 - Any automatic migration of existing `id:` jobs on load. **The live file is retargeted by hand,
   by me, after this branch passes** — code must not rewrite the operator's job file behind them.
 - A genuinely sticky per-session identity that survives both recreation *and* rearrangement.
+- **Idle-vs-active session detection (added 2026-08-08, after a live incident — READ THIS BEFORE
+  YOU START).** A nudge job fired into the CEO's *active* Claude Code pane and he had to stop work
+  to check it was not a real instruction. Evidence and the full write-up are in **BACKLOG #7**;
+  the short version is that `Session.job` (`-zsh` vs `node`) already distinguishes idle from busy
+  and `/api/sessions` already returns it, so an "only send to idle sessions" predicate is cheap —
+  **but it is not in this spec and it is not authorised.** Do **not** add it to this branch, do not
+  "while we're here" it, do not change what a target resolves to. If you think it belongs here,
+  say so to me and I will re-spec; a build that quietly widens its own scope fails my review
+  regardless of how good the idea is.
 
 ## 4. Acceptance criteria (executable)
 
