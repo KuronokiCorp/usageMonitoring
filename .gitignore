@@ -21,3 +21,11 @@ venv/
 # macOS
 .DS_Store
 .env.todoai
+
+# Spec Kit machine-local pointer — REQUIRED at root level, not only in .specify/.gitignore.
+# Spec Kit Standard Rev C, precondition P3: an ignore rule inside .specify/ is branch-scoped,
+# so it does not exist on branches without the scaffold (records-only main) and does not survive
+# `git branch -D` of a rejected feature branch — checkout never deletes untracked files, so the
+# file outlives the rule meant to cover it and one `git add -A` commits it. This line is on
+# every branch that carries this file, which is the point.
+.specify/feature.json
