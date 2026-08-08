@@ -21,3 +21,13 @@ venv/
 # macOS
 .DS_Store
 .env.todoai
+
+# Spec Kit machine-local pointer — REQUIRED at root level (Spec Kit Standard Rev C, P3).
+# This line is on `main` deliberately, and `main` is the branch that most needs it: it carries
+# no `.specify/` scaffold, so it carries no `.specify/.gitignore` either. A `.specify/feature.json`
+# left on disk by a feature branch SURVIVES the switch to `main` (checkout never deletes untracked
+# files) and, without this line, is untracked AND unignored — one `git add -A` in a records-only
+# session commits another machine's feature pointer. Reproduced in this repo on 2026-08-08 before
+# adding it: on `main`, `git check-ignore` did not match and `git add -An` reported
+# `add '.specify/feature.json'`. Same holds after `git branch -D` of a rejected branch.
+.specify/feature.json
