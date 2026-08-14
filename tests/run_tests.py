@@ -27,8 +27,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
@@ -54,6 +58,15 @@ _ensure_fakes_executable()
 
 sys.path.insert(0, REPO_ROOT)
 import iterm_ctl  # noqa: E402  (import after sys.path setup, on purpose)
+import iterm_web  # noqa: E402  (G10 -- iterm_web.py's scheduler/API, spec
+                   # docs/specs/stable-job-targets-and-zero-match-failure.md).
+                   # Importing the module has no side effects on its own --
+                   # it defines functions/classes/the PAGE string only; the
+                   # server, the scheduler thread, and load_recent_log() all
+                   # run from main(), never from import. Never touches the
+                   # real iterm_jobs.json/activity.log: G10 monkeypatches
+                   # iterm_web.JOBS_FILE/ACTIVITY_FILE to a throwaway temp
+                   # path in its own setUp/tearDown before any test runs.
 
 # A real, empty, never-written-to directory -- used as PATH when a test needs
 # to prove that *neither* the fake *nor* anything real is reachable (spec
@@ -1250,6 +1263,130 @@ class G9TmuxBackendLive(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# G10 -- iterm_web.py: a 0-match send is a visible failure, not a silent
+# success (docs/specs/stable-job-targets-and-zero-match-failure.md S2,
+# AC-5/AC-6/AC-7). Exercises the real run_job() function and a real
+# iterm_web.Handler HTTP server bound to an OS-assigned ephemeral port
+# (never 8765 -- spec/dispatch constraint) inside this process's own
+# hermetic env (fake osascript on PATH, spec section 3). JOBS_FILE and
+# ACTIVITY_FILE are monkeypatched to a throwaway tempfile.mkdtemp() path for
+# the duration of each test, in setUp/tearDown -- never the repo root's real
+# iterm_jobs.json/activity.log (CLAUDE.md, dispatch rule 2). Importing
+# iterm_web.py here never starts anything against the live admin (PID 1471,
+# port 8765): that is a wholly separate OS process; this test process only
+# ever calls run_job()/spins its own throwaway HTTP server in-process.
+# --------------------------------------------------------------------------- #
+class G10ZeroMatchIsAFailure(unittest.TestCase):
+    def setUp(self):
+        self._orig_jobs_file = iterm_web.JOBS_FILE
+        self._orig_activity_file = iterm_web.ACTIVITY_FILE
+        self._tmp_dir = tempfile.mkdtemp(prefix="itermon-web-test-")
+        iterm_web.JOBS_FILE = os.path.join(self._tmp_dir, "iterm_jobs.json")
+        iterm_web.ACTIVITY_FILE = os.path.join(self._tmp_dir, "activity.log")
+        iterm_web._log.clear()
+
+    def tearDown(self):
+        iterm_web.JOBS_FILE = self._orig_jobs_file
+        iterm_web.ACTIVITY_FILE = self._orig_activity_file
+        iterm_web._log.clear()
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _last_log_entry(self) -> dict:
+        return iterm_web._log[-1]
+
+    @contextlib.contextmanager
+    def _running_server(self):
+        """A real ThreadingHTTPServer on an OS-assigned ephemeral port
+        (never 8765), serving iterm_web.Handler, for the duration of the
+        block. Runs in a daemon thread; the caller must issue its request(s)
+        synchronously inside the `with`, while the surrounding hermetic_env()
+        is still active, since the handler thread reads the same process-wide
+        os.environ the request-issuing code set up."""
+        server = ThreadingHTTPServer(("127.0.0.1", 0), iterm_web.Handler)
+        port = server.server_address[1]
+        self.assertNotEqual(port, 8765, "must never bind the live admin's port")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield port
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def _post(self, port: int, path: str, body: dict):
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+
+    # -- AC-5: run_job(), 0 matches --
+    def test_ac5_run_job_zero_match_status_and_error_log_kind(self):
+        with hermetic_env():  # ITERMON_FAKE_LISTING unset -> fake osascript lists 0 sessions
+            result = iterm_web.run_job(
+                {"target": "index:9.9.9", "command": "echo hi", "name": "nudge"}
+            )
+        self.assertEqual(result["status"], "MATCHED 0 SESSIONS — not delivered")
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "error")
+        self.assertIn("nudge", entry["message"])
+        self.assertIn("index:9.9.9", entry["message"])
+        self.assertIn("NOT DELIVERED", entry["message"])
+
+    # -- AC-6: run_job(), 1 match -- byte-identical to before this change --
+    def test_ac6_run_job_one_match_status_and_send_log_kind_unchanged(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            result = iterm_web.run_job(
+                {"target": "1.1.1", "command": "echo hi", "name": "nudge"}
+            )
+        self.assertEqual(result, {"status": "sent to 1 session(s)", "sent": 1})
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "send")
+        self.assertIn("sent", entry["message"])
+
+    # -- AC-7: /api/send, 0 matches -- 200, sent==[], matched==0, log kind error --
+    def test_ac7_api_send_zero_match_is_200_sent_empty_matched_0_error_log(self):
+        listing_path = write_tmp("")  # empty listing -> 0 sessions
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with self._running_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "index:9.9.9", "command": "echo hi"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["sent"], [])
+        self.assertEqual(payload["matched"], 0)
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "error")
+        self.assertIn("NOT DELIVERED", entry["message"])
+
+    def test_api_send_one_match_response_shape_unchanged_no_matched_field(self):
+        # Regression: the pre-existing {"sent": hits} shape and 200 status
+        # for a real delivery must be untouched -- "matched" is a NEW field
+        # that only appears on the 0-match path (spec S2: "add ... never by
+        # mutating an old one").
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with self._running_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sent"]), 1)
+        self.assertEqual(payload["sent"][0]["index"], "1.1.1")
+        self.assertNotIn("matched", payload)
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "send")
+
+
+# --------------------------------------------------------------------------- #
 # --twice: determinism harness (spec section 4, G7)
 # --------------------------------------------------------------------------- #
 def _run_once():
@@ -1305,6 +1442,7 @@ def _load_suite() -> unittest.TestSuite:
         G6MCPWireProtocol,
         G8TmuxBackendHermetic,
         G9TmuxBackendLive,
+        G10ZeroMatchIsAFailure,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     return suite

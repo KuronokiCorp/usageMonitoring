@@ -98,13 +98,26 @@ def do_send(target: str, command: str, submit: bool) -> list[dict]:
 
 def run_job(job: dict) -> dict:
     """Execute a scheduled job: send its command to the matching session(s).
-    Returns a summary dict with a human-readable 'status' string."""
+    Returns a summary dict with a human-readable 'status' string.
+
+    A 0-match send is a distinct failure state, not a silent success (spec
+    docs/specs/stable-job-targets-and-zero-match-failure.md, S2): a target
+    that has rotted (e.g. a stale id: after session recreation) must not log
+    or read exactly like a legitimately empty send. len(hits) >= 1 keeps its
+    pre-existing log kind ("send") and status string ("sent to N
+    session(s)") byte-identical to before this change (AC-6)."""
     target = job["target"]
     command = job["command"]
     submit = job.get("submit", False)
     name = job.get("name", "job")
     hits = do_send(target, command, submit)
-    who = ", ".join(h["index"] for h in hits) or "no match"
+    if len(hits) == 0:
+        log_event(
+            "error",
+            f'job "{name}" ({target}) matched 0 sessions — NOT DELIVERED: {command!r}',
+        )
+        return {"status": "MATCHED 0 SESSIONS — not delivered", "sent": 0}
+    who = ", ".join(h["index"] for h in hits)
     log_event("send", f'job "{name}" ({target}) → sent {command!r} to {len(hits)} session(s): {who}')
     return {"status": f"sent to {len(hits)} session(s)", "sent": len(hits)}
 
@@ -293,7 +306,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 log_event("error", f'send to {target}: {e}')
                 return self._json({"error": str(e)}, 500)
-            who = ", ".join(h["index"] for h in hits) or "no match"
+            if not hits:
+                # spec S2: 0 matches is a distinct failure, not a silent
+                # empty success. Keep the existing {"sent": hits} key and
+                # the 200 status (scripts posting here depend on both) --
+                # surface the failure in a NEW "matched" field only, and log
+                # kind "error" instead of "send" so it can't be confused
+                # with a legitimate delivery (AC-7).
+                log_event(
+                    "error",
+                    f'manual send ({target}) matched 0 sessions — NOT DELIVERED: {command!r}',
+                )
+                return self._json({"sent": hits, "matched": 0})
+            who = ", ".join(h["index"] for h in hits)
             log_event("send", f'manual → sent {command!r} to {len(hits)} session(s): {who}')
             return self._json({"sent": hits})
 
