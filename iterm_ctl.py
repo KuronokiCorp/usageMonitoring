@@ -11,6 +11,7 @@ tmux backend needs no such permission, but does need a tmux server.
 Examples:
     ./iterm_ctl.py list
     ./iterm_ctl.py send 2.1.1 "git status"
+    ./iterm_ctl.py send index:2.1.1 "git status"
     ./iterm_ctl.py send id:A0205 "ls -la"
     ./iterm_ctl.py send name:daily "echo hi"
     ./iterm_ctl.py send --all "pwd" --yes
@@ -131,6 +132,18 @@ def resolve_targets(sessions, target, all_flag) -> list[Session]:
     if target.startswith("name:"):
         pat = re.compile(target[5:], re.IGNORECASE)
         return [s for s in sessions if pat.search(s.name)]
+    if target.startswith("index:"):
+        # docs/specs/stable-job-targets-and-zero-match-failure.md S1: the
+        # explicit spelling of the bare-index fast path above (branch 1).
+        # Same match semantics -- exact string equality on Session.index,
+        # no substring fallback -- so both spellings are interchangeable.
+        # Before this branch existed, "index:2.1.1" fell all the way through
+        # to the bare-substring fallback below, matched nothing, and
+        # returned [] silently: the exact bug class this spec exists to
+        # kill (AC-1/AC-2). Placed with the other explicit prefixes, before
+        # the exact-match and bare-substring fallbacks, per spec ordering.
+        needle = target[len("index:"):]
+        return [s for s in sessions if s.index == needle]
     # Exact match on index or id (spec section 5.1, BACKLOG 0c) -- lets a tmux
     # user address a pane bare by its human "session:window.pane" address
     # (e.g. "work:2.0") or its stable "%N" pane id, the way tmux users already
@@ -578,7 +591,7 @@ def build_parser():
     sp.set_defaults(func=cmd_list)
 
     sp = sub.add_parser("send", help="send a command to matching session(s)")
-    sp.add_argument("target", nargs="?", help="index (2.1.1), id:PREFIX, tty:NNN, name:REGEX, or substring")
+    sp.add_argument("target", nargs="?", help="index (2.1.1), index:VALUE, id:PREFIX, tty:NNN, name:REGEX, or substring")
     sp.add_argument("command", nargs=argparse.REMAINDER, help="command text to send")
     sp.add_argument("--all", action="store_true", help="send to every session")
     sp.add_argument("--no-enter", action="store_true", help="type without pressing Enter")
@@ -587,7 +600,7 @@ def build_parser():
     sp.set_defaults(func=cmd_send)
 
     sp = sub.add_parser("read", help="print visible screen contents of matching session(s)")
-    sp.add_argument("target", nargs="?", help="index, id:, tty:, name:, or substring")
+    sp.add_argument("target", nargs="?", help="index, index:, id:, tty:, name:, or substring")
     sp.add_argument("--all", action="store_true", help="read every session")
     _add_backend_flag(sp)
     sp.set_defaults(func=cmd_read)

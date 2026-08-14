@@ -310,6 +310,75 @@ class G1ResolveTargets(unittest.TestCase):
         got = iterm_ctl.resolve_targets(by_id, "%3", False)
         self.assertEqual(got, by_id)
 
+    # -- docs/specs/stable-job-targets-and-zero-match-failure.md S1: the
+    # explicit "index:" prefix. Before this branch existed, "index:2.1.1"
+    # fell through every prefix check to the bare-substring fallback,
+    # matched nothing, and returned [] silently -- exactly the "wrong
+    # result that is byte-identical to a legitimately empty one" bug class
+    # this whole spec exists to kill (see spec section 1's "the rot is
+    # invisible"). Reproduced live against this exact branch at 68f8b93
+    # before this fix (Messi's dispatch note): 'index:2.1.1' -> [] while
+    # '2.1.1' -> ['2.1.1']. --
+
+    def test_ac1_index_prefix_matches_exact_session(self):
+        got = iterm_ctl.resolve_targets(self.sessions, "index:2.1.1", False)
+        self.assertEqual([s.id for s in got], ["CCCC3333"])
+        # Both spellings are interchangeable -- same session, same result.
+        self.assertEqual(got, iterm_ctl.resolve_targets(self.sessions, "2.1.1", False))
+
+    def test_ac2_index_prefix_no_match_returns_empty_not_substring_fallback(self):
+        got = iterm_ctl.resolve_targets(self.sessions, "index:9.9.9", False)
+        self.assertEqual(got, [])
+
+    def test_index_prefix_does_not_fall_back_to_a_name_substring_match(self):
+        # A target whose index: value doesn't exist anywhere, but which
+        # WOULD match a session by name as a bare substring, must still
+        # return [] -- proves the index: branch's own return short-circuits
+        # before the bare-substring fallback ever runs, not just that its
+        # value happens not to collide with a name.
+        sessions = [iterm_ctl.Session("1.1.1", "SID", "/dev/ttys001", "index:not-a-real-index")]
+        got = iterm_ctl.resolve_targets(sessions, "index:not-a-real-index", False)
+        self.assertEqual(got, [])
+
+    def test_ac3_regression_all_six_pre_existing_forms_are_unchanged(self):
+        # spec AC-3: bare index, id:, tty:, name:, exact-id/index (the 5.1
+        # branch), and bare-substring must all return exactly what they
+        # returned before S1 landed. Asserted together, in one place, per
+        # the spec's explicit "all six forms, not a sample."
+        got = iterm_ctl.resolve_targets(self.sessions, "2.1.1", False)  # bare index
+        self.assertEqual([s.id for s in got], ["CCCC3333"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "id:aaaa", False)  # id:
+        self.assertEqual([s.id for s in got], ["AAAA1111"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "tty:ttys002", False)  # tty:
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "name:^DAILY", False)  # name:
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+        by_id = [iterm_ctl.Session("3.9.9", "%3", "/dev/ttysC", "no-match-here")]
+        got = iterm_ctl.resolve_targets(by_id, "%3", False)  # exact-match branch (5.1)
+        self.assertEqual(got, by_id)
+
+        got = iterm_ctl.resolve_targets(self.sessions, "DAILY", False)  # bare substring
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+    def test_ac4_duplicate_name_target_returns_both_sessions_not_deduped(self):
+        # spec AC-4: this documents a real hazard (S2's background: two live
+        # sessions both literally named "-zsh") -- a name: match on two
+        # identically-named sessions must return BOTH, not silently dedupe
+        # to one. resolve_targets never had dedup logic; this pins that it
+        # still doesn't after S1's additive change.
+        twins = [
+            iterm_ctl.Session("1.1.1", "TWIN-A", "/dev/ttys010", "-zsh"),
+            iterm_ctl.Session("1.2.1", "TWIN-B", "/dev/ttys011", "-zsh"),
+            iterm_ctl.Session("1.3.1", "OTHER", "/dev/ttys012", "vim"),
+        ]
+        got = iterm_ctl.resolve_targets(twins, "name:^-zsh$", False)
+        self.assertEqual({s.id for s in got}, {"TWIN-A", "TWIN-B"})
+        self.assertEqual(len(got), 2)
+
 
 # --------------------------------------------------------------------------- #
 # G2 -- as_str AppleScript escaping
