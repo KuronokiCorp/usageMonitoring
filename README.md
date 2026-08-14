@@ -188,6 +188,7 @@ the same table `iterm-ctl backends` prints:
 | Selector        | Example         | Notes                                            |
 |-----------------|-----------------|--------------------------------------------------|
 | index           | `3.1.1` (iTerm2) / `work:2.0` (tmux) | window.tab.session (iTerm2) or session:window.pane (tmux). **Positional on iTerm2 — shifts when windows open/close; tmux pane addresses don't have this problem (see below).** |
+| `index:VALUE`   | `index:3.1.1`   | explicit spelling of the row above — same exact-match semantics, no substring fallback. Interchangeable with the bare form. |
 | bare id         | `%3` (tmux)     | tmux pane id, typed bare — same as `id:%3`       |
 | `id:PREFIX`     | `id:C86EE5` (iTerm2) / `id:%3` (tmux) | matches the stable id (UUID prefix on iTerm2, exact `%N` on tmux). **Most reliable on iTerm2.** |
 | `tty:NNN`       | `tty:ttys002`   | matches the device tty                           |
@@ -220,7 +221,14 @@ Every pane, however deeply nested, gets its own stable UUID and can be targeted
 individually (or with `--all`, which hits every pane in every tab in every
 window). Only the leading window number is positional — the frontmost window is
 always window 1, so those numbers shift as you focus/open/close windows; the
-UUID does not, which is why scheduled jobs target by `id:`.
+UUID does not shift when windows are merely reordered. But the UUID does **not**
+survive session recreation — killing and reopening a pane mints a brand-new
+UUID, so an `id:` target silently stops matching anything. A recreated session
+usually lands back in the same window/tab/pane position, so **scheduled jobs
+target by `index:` instead**: it keeps delivering across recreation, at the cost
+of matching the wrong neighbour if you reorder windows yourself in the
+meantime — an acceptable trade for an unattended job, not for an interactive
+`send`.
 
 On the **tmux backend**, the equivalent structure is **session → window →
 pane**, and the index is `session:window.pane` (e.g. `work:2.0`), which is
