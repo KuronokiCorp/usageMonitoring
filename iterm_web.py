@@ -554,6 +554,10 @@ PAGE = r"""<!doctype html>
 <script>
 let SESSIONS = [];
 const $ = id => document.getElementById(id);
+// Must match iterm_web.py's run_job()/S2 status string exactly (spec
+// docs/specs/stable-job-targets-and-zero-match-failure.md) so a 0-match
+// send renders as a visible failure here, not a bare "ok".
+const ZERO_MATCH_STATUS = 'MATCHED 0 SESSIONS — not delivered';
 
 function tick(){ $('clock').textContent = new Date().toLocaleTimeString(); }
 setInterval(tick, 1000); tick();
@@ -587,7 +591,16 @@ function renderJobTargets(keep){
       <span>${text.replace(/</g,'&lt;')}</span></label>`;
   };
   let html = row('__all__', 'ALL sessions (one job per session)', 'jt-all');
-  for(const s of SESSIONS) html += row('id:'+s.id, `${s.index}  ${s.job||''}  ${s.name}`);
+  // Scheduled-job targets use index:, never id: (spec S3, root cause of
+  // BACKLOG #6): id: is a session UUID that iTerm2 mints fresh on every
+  // session recreation, so an id:-targeted job rots the next time the
+  // window/tab/session it pointed at is recreated. index: is positional
+  // and survives recreation in the same pane position. The manual-send
+  // <select> (targetOptions(), below) and the sessions table's "use"
+  // button deliberately keep id: -- a manual send happens seconds after
+  // this page loaded, where a UUID is the most precise handle available
+  // and has no time window in which to rot.
+  for(const s of SESSIONS) html += row('index:'+s.index, `${s.index}  ${s.job||''}  ${s.name}`);
   box.innerHTML = html;
   // "ALL sessions" is exclusive: ticking it clears the rest and vice-versa
   const all = box.querySelector('.jt-all input');
@@ -622,7 +635,13 @@ async function loadSessions(){
 
 function show(id, obj){
   const el = $(id);
+  // 0-match is a visible failure, not a bare ok (spec S2) -- covers both
+  // /api/send's new "matched":0 field (the send panel) and run_job()'s
+  // status string (the job list's "run" button, which shares this same
+  // result renderer).
   if(obj.error){ el.className='result err'; el.textContent = 'Error: '+obj.error; }
+  else if(obj.matched === 0 || obj.status === ZERO_MATCH_STATUS){ el.className='result err';
+    el.textContent = 'matched 0 sessions — nothing was sent'; }
   else if(obj.sent){ el.className='result ok';
     el.textContent = 'Sent to:\n' + obj.sent.map(h=>`  ${h.index}  ${h.tty}  ${h.name}`).join('\n'); }
   else { el.className='result ok'; el.textContent = JSON.stringify(obj); }
@@ -651,10 +670,14 @@ async function createJob(){
   const baseName = $('jobName').value.trim();
   if(!baseName){ el.className='result err'; el.textContent='Job name is required.'; return; }
   // "ALL sessions" expands to one job per current session (individually
-  // manageable), rather than a single opaque __all__ job.
+  // manageable), rather than a single opaque __all__ job. Both this
+  // expansion and the individually-ticked rows in `picked` (already
+  // index:-valued -- see renderJobTargets()) build index: targets, never
+  // id: (spec S3): id: rots on the next session recreation, which is
+  // exactly the bug this spec exists to fix.
   const hasAll = picked.some(p=>p.value==='__all__');
   const targets = hasAll
-    ? SESSIONS.map(s => ({value:'id:'+s.id, label:`${s.index}  ${s.job||''}  ${s.name}`}))
+    ? SESSIONS.map(s => ({value:'index:'+s.index, label:`${s.index}  ${s.job||''}  ${s.name}`}))
     : picked;
   if(!targets.length){ el.className='result err'; el.textContent='No sessions to target.'; return; }
   const multi = targets.length > 1;
@@ -671,19 +694,37 @@ async function createJob(){
   else { el.className='result err'; el.textContent='Error: '+(r.error||'failed'); }
 }
 
+// Resolves a job's stored target to a live session's name for display.
+// Handles every spelling a job's `target` can carry: id:<uuid> (older
+// jobs, or anything created before spec S3), index:<idx> (what
+// createJob()/renderJobTargets() mint now), and a bare index (accepted by
+// resolve_targets() itself, spec S1). When nothing currently matches, the
+// raw target is shown as-is (spec S3) -- an unresolvable target must look
+// unresolvable, not blank, since that unresolvability IS the bug this spec
+// makes visible.
+function resolveTargetName(target){
+  for(const s of SESSIONS){
+    if('id:'+s.id === target) return s.name;
+    if('index:'+s.index === target) return s.name;
+    if(s.index === target) return s.name;
+  }
+  return target;
+}
+
 async function loadJobs(){
   const jobs = await api('/api/jobs');
   const tb = $('jobs'); tb.innerHTML='';
   if(!jobs.length){ tb.innerHTML='<tr><td colspan="6" class="muted">No jobs yet.</td></tr>'; return; }
   for(const j of jobs){
     const tr = document.createElement('tr'); tr.className='jobrow';
-    const targetName = (SESSIONS.find(s=>'id:'+s.id===j.target)||{}).name || j.target;
+    const targetName = resolveTargetName(j.target);
+    const isZeroMatch = j.last_status === ZERO_MATCH_STATUS;
     tr.innerHTML = `
       <td>${j.name.replace(/</g,'&lt;')}<div class="st">${j.enabled?'enabled':'paused'} · “${(j.command||'').replace(/</g,'&lt;').slice(0,40)}”${j.submit?' ⏎':''}</div></td>
       <td class="mono">${j.schedule}</td>
       <td>${targetName.replace(/</g,'&lt;').slice(0,28)}</td>
       <td class="mono">${j.next_run||'—'}</td>
-      <td class="mono">${j.last_run||'—'}<div class="st">${j.last_status||''}</div></td>
+      <td class="mono">${j.last_run||'—'}<div class="st" style="${isZeroMatch?'color:#ffb0b0':''}">${(j.last_status||'').replace(/</g,'&lt;')}</div></td>
       <td></td>`;
     const actions = tr.lastElementChild;
     const mk = (label, cls, fn) => { const b=document.createElement('button'); b.className=cls; b.textContent=label; b.onclick=fn; b.style.marginRight='4px'; return b; };
