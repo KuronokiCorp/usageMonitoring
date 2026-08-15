@@ -206,6 +206,42 @@ MUTATIONS = [
             "            is_error = True\n"
         ),
     ),
+    dict(
+        id="M9",
+        file="iterm_web.py",
+        group="G11 (Origin check, spec admin-api-origin-hardening AC-16)",
+        old=(
+            "        elif origin is None:\n"
+            "            reason = None  # no Origin header at all -- curl/scripts, always allowed\n"
+            "        elif origin == \"null\":\n"
+            "            reason = \"Origin: null\"\n"
+            "        elif origin not in allowed_origins_for(bound_host, bound_port):\n"
+            "            reason = \"Origin not allowlisted\"\n"
+        ),
+        new=(
+            "        elif origin is None:\n"
+            "            reason = None  # no Origin header at all -- curl/scripts, always allowed\n"
+            "        else:\n"
+            "            reason = None  # BUG: Origin is no longer checked at all\n"
+        ),
+    ),
+    dict(
+        id="M10",
+        file="iterm_web.py",
+        group="G11 (Host check, spec admin-api-origin-hardening AC-16)",
+        old=(
+            "        if host is None:\n"
+            "            reason = \"missing Host header\"\n"
+            "        elif host.lower() not in allowed_hosts_for(bound_host, bound_port):\n"
+            "            reason = \"Host not allowlisted\"\n"
+        ),
+        new=(
+            "        if host is None:\n"
+            "            reason = None  # BUG: missing Host is no longer rejected\n"
+            "        elif False:\n"
+            "            reason = \"Host not allowlisted\"\n"
+        ),
+    ),
 ]
 
 
@@ -214,11 +250,17 @@ def _fresh_copy() -> str:
     iterm_mcp.py, and (as of docs/specs/stable-job-targets-and-zero-match-
     failure.md's G10 tests) iterm_web.py -- run_job()/the /api/send handler
     are exercised for real, in-process, against a throwaway HTTP server on
-    an ephemeral port; only start.sh stays copied inert (nothing in the
-    suite reaches it, kept only so the tree shape is honest), plus the
-    tests/ directory itself."""
+    an ephemeral port; start.sh stays copied inert (nothing in the suite
+    reaches it, kept only so the tree shape is honest); package.json,
+    README.md, and CHANGELOG.md are copied read-only (as of
+    docs/specs/admin-api-origin-hardening.md's G11 AC-14/AC-D1/AC-D2 tests,
+    which read them directly and would otherwise fail on a baseline copy for
+    a reason unrelated to any mutation); plus the tests/ directory itself."""
     tmp = tempfile.mkdtemp(prefix="itermon-counter-test-")
-    for name in ("iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "start.sh"):
+    for name in (
+        "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "start.sh",
+        "package.json", "README.md", "CHANGELOG.md",
+    ):
         src = os.path.join(REPO_ROOT, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(tmp, name))
