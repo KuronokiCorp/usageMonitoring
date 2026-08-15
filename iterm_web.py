@@ -22,6 +22,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -232,11 +233,162 @@ def scheduler_loop():
 
 
 # --------------------------------------------------------------------------- #
+# Origin / Host allowlist (BACKLOG #12 --
+# docs/specs/admin-api-origin-hardening.md). Both checks are fail-closed and
+# ALWAYS derived from the address the server is actually bound to
+# (self.server.server_address, read inside the guard below) -- never a
+# hard-coded 8765. The test harness binds an ephemeral port and users run
+# --port; hard-coding would silently defeat both.
+# --------------------------------------------------------------------------- #
+LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
+EXTRA_ALLOWED_ORIGINS: list[str] = []  # populated by main() from --allow-origin
+
+# Rejection-logging rate-limit window (spec 4.3) -- a module-level constant
+# so a test can shrink it without a real sleep.
+REJECTION_LOG_WINDOW_SECONDS = 60
+
+# Tests monkeypatch this name to a fake, manually-advanced clock so AC-12
+# (rate-limit correctness) is deterministic without ever calling
+# time.sleep() (spec 4.3: "never a sleep in a test"). Production leaves this
+# as the real clock.
+_REJECTION_CLOCK = time.monotonic
+
+_rejection_state_lock = threading.Lock()
+_rejection_state = {"last_logged_at": None, "suppressed": 0}
+
+
+def _bound_names(bound_host: str) -> tuple:
+    """Wildcard bind (0.0.0.0 / :: / '') -> loopback names only. A concrete
+    non-loopback bind -> loopback names PLUS that address (spec 4.1)."""
+    if bound_host in ("0.0.0.0", "::", ""):
+        return LOOPBACK_NAMES
+    return LOOPBACK_NAMES + (bound_host,)
+
+
+def allowed_origins_for(bound_host: str, bound_port: int) -> set:
+    """{'http://<name>:<port>', ...} for every loopback spelling (plus the
+    concrete bind address, if not a wildcard) union EXTRA_ALLOWED_ORIGINS.
+    Also accepts the port-less form when port == 80 (spec 4.1)."""
+    names = _bound_names(bound_host)
+    origins = {f"http://{h}:{bound_port}" for h in names}
+    if bound_port == 80:
+        origins |= {f"http://{h}" for h in names}
+    origins |= set(EXTRA_ALLOWED_ORIGINS)
+    return origins
+
+
+def allowed_hosts_for(bound_host: str, bound_port: int) -> set:
+    """{'<name>', '<name>:<port>', ...} plus the host[:port] part of every
+    EXTRA_ALLOWED_ORIGINS entry -- all lower-cased, since Host comparison is
+    case-insensitive (spec 4.1)."""
+    names = _bound_names(bound_host)
+    hosts = set()
+    for h in names:
+        hosts.add(h.lower())
+        hosts.add(f"{h}:{bound_port}".lower())
+    for origin in EXTRA_ALLOWED_ORIGINS:
+        host_part = origin.split("://", 1)[-1]
+        hosts.add(host_part.lower())
+    return hosts
+
+
+# Bare scheme://host[:port], nothing else: no path, no query string, no
+# trailing slash. A literal "*" never matches this (no "://"), so it is
+# refused by construction as well as by the explicit check below.
+_ALLOW_ORIGIN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^/?#\s]+$")
+
+
+def validate_allow_origin(value: str) -> None:
+    """Raise ValueError unless `value` is a bare scheme://host[:port] (spec
+    4.4). A literal '*' is always refused so nobody can turn the allowlist
+    off by accident -- main() turns this into a startup-time, non-zero-exit
+    error, never a silent skip."""
+    if value == "*" or not _ALLOW_ORIGIN_RE.match(value):
+        raise ValueError(
+            f"--allow-origin {value!r} must be a bare scheme://host[:port] "
+            "-- no path, no query string, no trailing slash, and never '*'"
+        )
+
+
+def _log_rejection(reason: str, client_ip: str, host_header, origin_header) -> None:
+    """Log a rejected request via log_event(), rate-limited to at most one
+    entry per REJECTION_LOG_WINDOW_SECONDS with the suppressed count folded
+    into the next entry (spec 4.3). log_event() itself appends to
+    activity.log with NO cap -- an attacker page firing this guard in a loop
+    must not be able to fill the disk (this machine has already hit 96%
+    disk, BACKLOG #7/#11). The attacker's Origin/Host are logged here (for
+    the operator, in the Activity panel) but never echoed back in the HTTP
+    response body."""
+    now = _REJECTION_CLOCK()
+    message = f"rejected {client_ip}: {reason} (Host={host_header!r}, Origin={origin_header!r})"
+    with _rejection_state_lock:
+        last = _rejection_state["last_logged_at"]
+        if last is None or (now - last) >= REJECTION_LOG_WINDOW_SECONDS:
+            suppressed = _rejection_state["suppressed"]
+            if suppressed:
+                message += f" (+{suppressed} more suppressed)"
+            _rejection_state["last_logged_at"] = now
+            _rejection_state["suppressed"] = 0
+            should_log = True
+        else:
+            _rejection_state["suppressed"] += 1
+            should_log = False
+    if should_log:
+        log_event("error", message)
+
+
+# --------------------------------------------------------------------------- #
 # HTTP handler
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # quiet
         pass
+
+    # ---- Origin/Host guard (spec 4.2) ----------------------------------- #
+    # parse_request() is the ONE hook every HTTP verb funnels through, ahead
+    # of BaseHTTPRequestHandler.handle_one_request() ever looking up or
+    # calling a do_* method: if parse_request() returns False,
+    # handle_one_request() returns without dispatching at all. That makes
+    # this guard structurally unskippable by a future do_DELETE/do_PUT --
+    # there is no second place a verb could sneak in through, because
+    # routing itself never runs before this check. Runs before
+    # self._read_body() too, since that only ever happens inside a do_*
+    # method.
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        if not self._origin_host_guard():
+            return False
+        return True
+
+    def _origin_host_guard(self) -> bool:
+        bound_host, bound_port = self.server.server_address[0], self.server.server_address[1]
+        host = self.headers.get("Host")
+        origin = self.headers.get("Origin")
+        reason = None
+        if host is None:
+            reason = "missing Host header"
+        elif host.lower() not in allowed_hosts_for(bound_host, bound_port):
+            reason = "Host not allowlisted"
+        elif origin is None:
+            reason = None  # no Origin header at all -- curl/scripts, always allowed
+        elif origin == "null":
+            reason = "Origin: null"
+        elif origin not in allowed_origins_for(bound_host, bound_port):
+            reason = "Origin not allowlisted"
+        if reason is None:
+            return True
+        _log_rejection(reason, self.client_address[0], host, origin)
+        self._forbidden()
+        return False
+
+    def _forbidden(self) -> None:
+        body = json.dumps({"error": "forbidden"}).encode()
+        self.send_response(403)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
@@ -766,7 +918,28 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--open", action="store_true", help="open the page in a browser")
+    ap.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help=(
+            "additional allowed browser Origin (repeatable), e.g. "
+            "http://192.168.1.5:8765 or chrome-extension://<id>. Additive to "
+            "the loopback allowlist and opt-in only -- the default stays "
+            "fail-closed. Never '*' and never a path (refused at startup)."
+        ),
+    )
     args = ap.parse_args()
+
+    for origin in args.allow_origin:
+        try:
+            validate_allow_origin(origin)
+        except ValueError as e:
+            ap.error(str(e))
+
+    global EXTRA_ALLOWED_ORIGINS
+    EXTRA_ALLOWED_ORIGINS = list(args.allow_origin)
 
     load_recent_log()
     log_event("server", f"admin started on {args.host}:{args.port}")
