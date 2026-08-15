@@ -250,7 +250,26 @@ npm run start:open           # …and open the browser
 npm start -- --port 9000     # custom port
 ```
 
-Bound to `127.0.0.1` only (local, no auth). Panels:
+Bound to `127.0.0.1` by default, **no authentication** — there is no password or token,
+by design (see below). What actually protects it: every request is checked against an
+`Origin`/`Host` allowlist derived from the address it's bound to, **before** the request
+is read or routed at all. A browser tab from any other site — the classic "malicious web
+page silently POSTs to your local admin API" attack — is rejected with `403`. This is a
+**browser-only** defense: `curl`, scripts, and anything else running as a local process on
+your machine sends no `Origin` header and is **not** authenticated by this check — it is
+obeyed exactly as before. An XSS in the admin page itself, or another local process, can
+still reach the API; this fix closes drive-by browser requests and DNS rebinding, nothing
+more. If you bind to a LAN address and need to browse it by hostname (or you're wiring up
+a browser extension), add its origin explicitly:
+
+```bash
+npm start -- --allow-origin http://192.168.1.5:8765
+npm start -- --allow-origin chrome-extension://<extension-id>
+```
+
+`--allow-origin` is repeatable, additive to the built-in loopback allowlist, and validated
+at startup — a bare `*` or anything with a path is refused rather than silently widening
+what's allowed. Panels:
 
 1. **Sessions** — live auto-refreshing list; click *use* to target one.
 2. **Send a command** — pick a session, type a message, Send. The **Submit**
