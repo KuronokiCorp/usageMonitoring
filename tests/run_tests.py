@@ -24,11 +24,16 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 TESTS_DIR = os.path.dirname(os.path.realpath(__file__))
 REPO_ROOT = os.path.dirname(TESTS_DIR)
@@ -54,6 +59,15 @@ _ensure_fakes_executable()
 
 sys.path.insert(0, REPO_ROOT)
 import iterm_ctl  # noqa: E402  (import after sys.path setup, on purpose)
+import iterm_web  # noqa: E402  (G10 -- iterm_web.py's scheduler/API, spec
+                   # docs/specs/stable-job-targets-and-zero-match-failure.md).
+                   # Importing the module has no side effects on its own --
+                   # it defines functions/classes/the PAGE string only; the
+                   # server, the scheduler thread, and load_recent_log() all
+                   # run from main(), never from import. Never touches the
+                   # real iterm_jobs.json/activity.log: G10 monkeypatches
+                   # iterm_web.JOBS_FILE/ACTIVITY_FILE to a throwaway temp
+                   # path in its own setUp/tearDown before any test runs.
 
 # A real, empty, never-written-to directory -- used as PATH when a test needs
 # to prove that *neither* the fake *nor* anything real is reachable (spec
@@ -309,6 +323,75 @@ class G1ResolveTargets(unittest.TestCase):
         by_id = [iterm_ctl.Session("3.9.9", "%3", "/dev/ttysC", "no-match-here")]
         got = iterm_ctl.resolve_targets(by_id, "%3", False)
         self.assertEqual(got, by_id)
+
+    # -- docs/specs/stable-job-targets-and-zero-match-failure.md S1: the
+    # explicit "index:" prefix. Before this branch existed, "index:2.1.1"
+    # fell through every prefix check to the bare-substring fallback,
+    # matched nothing, and returned [] silently -- exactly the "wrong
+    # result that is byte-identical to a legitimately empty one" bug class
+    # this whole spec exists to kill (see spec section 1's "the rot is
+    # invisible"). Reproduced live against this exact branch at 68f8b93
+    # before this fix (Messi's dispatch note): 'index:2.1.1' -> [] while
+    # '2.1.1' -> ['2.1.1']. --
+
+    def test_ac1_index_prefix_matches_exact_session(self):
+        got = iterm_ctl.resolve_targets(self.sessions, "index:2.1.1", False)
+        self.assertEqual([s.id for s in got], ["CCCC3333"])
+        # Both spellings are interchangeable -- same session, same result.
+        self.assertEqual(got, iterm_ctl.resolve_targets(self.sessions, "2.1.1", False))
+
+    def test_ac2_index_prefix_no_match_returns_empty_not_substring_fallback(self):
+        got = iterm_ctl.resolve_targets(self.sessions, "index:9.9.9", False)
+        self.assertEqual(got, [])
+
+    def test_index_prefix_does_not_fall_back_to_a_name_substring_match(self):
+        # A target whose index: value doesn't exist anywhere, but which
+        # WOULD match a session by name as a bare substring, must still
+        # return [] -- proves the index: branch's own return short-circuits
+        # before the bare-substring fallback ever runs, not just that its
+        # value happens not to collide with a name.
+        sessions = [iterm_ctl.Session("1.1.1", "SID", "/dev/ttys001", "index:not-a-real-index")]
+        got = iterm_ctl.resolve_targets(sessions, "index:not-a-real-index", False)
+        self.assertEqual(got, [])
+
+    def test_ac3_regression_all_six_pre_existing_forms_are_unchanged(self):
+        # spec AC-3: bare index, id:, tty:, name:, exact-id/index (the 5.1
+        # branch), and bare-substring must all return exactly what they
+        # returned before S1 landed. Asserted together, in one place, per
+        # the spec's explicit "all six forms, not a sample."
+        got = iterm_ctl.resolve_targets(self.sessions, "2.1.1", False)  # bare index
+        self.assertEqual([s.id for s in got], ["CCCC3333"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "id:aaaa", False)  # id:
+        self.assertEqual([s.id for s in got], ["AAAA1111"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "tty:ttys002", False)  # tty:
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+        got = iterm_ctl.resolve_targets(self.sessions, "name:^DAILY", False)  # name:
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+        by_id = [iterm_ctl.Session("3.9.9", "%3", "/dev/ttysC", "no-match-here")]
+        got = iterm_ctl.resolve_targets(by_id, "%3", False)  # exact-match branch (5.1)
+        self.assertEqual(got, by_id)
+
+        got = iterm_ctl.resolve_targets(self.sessions, "DAILY", False)  # bare substring
+        self.assertEqual([s.id for s in got], ["BBBB2222"])
+
+    def test_ac4_duplicate_name_target_returns_both_sessions_not_deduped(self):
+        # spec AC-4: this documents a real hazard (S2's background: two live
+        # sessions both literally named "-zsh") -- a name: match on two
+        # identically-named sessions must return BOTH, not silently dedupe
+        # to one. resolve_targets never had dedup logic; this pins that it
+        # still doesn't after S1's additive change.
+        twins = [
+            iterm_ctl.Session("1.1.1", "TWIN-A", "/dev/ttys010", "-zsh"),
+            iterm_ctl.Session("1.2.1", "TWIN-B", "/dev/ttys011", "-zsh"),
+            iterm_ctl.Session("1.3.1", "OTHER", "/dev/ttys012", "vim"),
+        ]
+        got = iterm_ctl.resolve_targets(twins, "name:^-zsh$", False)
+        self.assertEqual({s.id for s in got}, {"TWIN-A", "TWIN-B"})
+        self.assertEqual(len(got), 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -1181,6 +1264,532 @@ class G9TmuxBackendLive(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# G10 -- iterm_web.py: a 0-match send is a visible failure, not a silent
+# success (docs/specs/stable-job-targets-and-zero-match-failure.md S2,
+# AC-5/AC-6/AC-7). Exercises the real run_job() function and a real
+# iterm_web.Handler HTTP server bound to an OS-assigned ephemeral port
+# (never 8765 -- spec/dispatch constraint) inside this process's own
+# hermetic env (fake osascript on PATH, spec section 3). JOBS_FILE and
+# ACTIVITY_FILE are monkeypatched to a throwaway tempfile.mkdtemp() path for
+# the duration of each test, in setUp/tearDown -- never the repo root's real
+# iterm_jobs.json/activity.log (CLAUDE.md, dispatch rule 2). Importing
+# iterm_web.py here never starts anything against the live admin (PID 1471,
+# port 8765): that is a wholly separate OS process; this test process only
+# ever calls run_job()/spins its own throwaway HTTP server in-process.
+# --------------------------------------------------------------------------- #
+def _raw_send_and_recv(port: int, request: bytes) -> bytes:
+    """Send raw bytes over a fresh socket to 127.0.0.1:port and return
+    whatever comes back before the peer closes (or a 5s timeout). Used by
+    G11 wherever urllib can't produce the exact wire-level request a test
+    needs -- a Host header that's absent entirely, or one that names a
+    different host than the socket physically connects to (the
+    DNS-rebinding shape itself, spec AC-3/AC-4)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall(request)
+        sock.settimeout(5)
+        chunks = []
+        try:
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        except socket.timeout:
+            pass
+        return b"".join(chunks)
+
+
+def _raw_request(port: int, method: str, path: str, headers: dict, body: bytes = b"") -> bytes:
+    """Hand-built HTTP/1.1 request giving full control over headers --
+    notably a Host/Origin pair independent of urllib's own header
+    management. Always HTTP/1.1 with an explicit Content-Length (0 if
+    `body` is empty) and Connection: close."""
+    hdr_lines = [f"{k}: {v}" for k, v in headers.items()]
+    if not any(k.lower() == "content-length" for k in headers):
+        hdr_lines.append(f"Content-Length: {len(body)}")
+    hdr_lines.append("Connection: close")
+    request = (f"{method} {path} HTTP/1.1\r\n" + "\r\n".join(hdr_lines) + "\r\n\r\n").encode() + body
+    return _raw_send_and_recv(port, request)
+
+
+def _raw_status(response: bytes) -> int:
+    return int(response.split(b"\r\n", 1)[0].split(b" ", 2)[1])
+
+
+def _raw_json_body(response: bytes) -> dict:
+    _head, _, body = response.partition(b"\r\n\r\n")
+    return json.loads(body.decode())
+
+
+@contextlib.contextmanager
+def _web_admin_server():
+    """A real ThreadingHTTPServer on an OS-assigned ephemeral port (never
+    8765), serving iterm_web.Handler, for the duration of the block. Shared
+    by G10 and G11 (spec docs/specs/admin-api-origin-hardening.md section 0:
+    "that harness already exists ... Extend it; do not invent a second
+    one."). Runs in a daemon thread; the caller must issue its request(s)
+    synchronously inside the `with`, while the surrounding hermetic_env() is
+    still active, since the handler thread reads the same process-wide
+    os.environ the request-issuing code set up."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), iterm_web.Handler)
+    port = server.server_address[1]
+    if port == 8765:
+        raise AssertionError("must never bind the live admin's port")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+class G10ZeroMatchIsAFailure(unittest.TestCase):
+    def setUp(self):
+        self._orig_jobs_file = iterm_web.JOBS_FILE
+        self._orig_activity_file = iterm_web.ACTIVITY_FILE
+        self._tmp_dir = tempfile.mkdtemp(prefix="itermon-web-test-")
+        iterm_web.JOBS_FILE = os.path.join(self._tmp_dir, "iterm_jobs.json")
+        iterm_web.ACTIVITY_FILE = os.path.join(self._tmp_dir, "activity.log")
+        iterm_web._log.clear()
+
+    def tearDown(self):
+        iterm_web.JOBS_FILE = self._orig_jobs_file
+        iterm_web.ACTIVITY_FILE = self._orig_activity_file
+        iterm_web._log.clear()
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    def _last_log_entry(self) -> dict:
+        return iterm_web._log[-1]
+
+    @contextlib.contextmanager
+    def _running_server(self):
+        with _web_admin_server() as port:
+            self.assertNotEqual(port, 8765, "must never bind the live admin's port")
+            yield port
+
+    def _post(self, port: int, path: str, body: dict):
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+
+    # -- AC-5: run_job(), 0 matches --
+    def test_ac5_run_job_zero_match_status_and_error_log_kind(self):
+        with hermetic_env():  # ITERMON_FAKE_LISTING unset -> fake osascript lists 0 sessions
+            result = iterm_web.run_job(
+                {"target": "index:9.9.9", "command": "echo hi", "name": "nudge"}
+            )
+        self.assertEqual(result["status"], "MATCHED 0 SESSIONS — not delivered")
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "error")
+        self.assertIn("nudge", entry["message"])
+        self.assertIn("index:9.9.9", entry["message"])
+        self.assertIn("NOT DELIVERED", entry["message"])
+
+    # -- AC-6: run_job(), 1 match -- byte-identical to before this change --
+    def test_ac6_run_job_one_match_status_and_send_log_kind_unchanged(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            result = iterm_web.run_job(
+                {"target": "1.1.1", "command": "echo hi", "name": "nudge"}
+            )
+        self.assertEqual(result, {"status": "sent to 1 session(s)", "sent": 1})
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "send")
+        self.assertIn("sent", entry["message"])
+
+    # -- AC-7: /api/send, 0 matches -- 200, sent==[], matched==0, log kind error --
+    def test_ac7_api_send_zero_match_is_200_sent_empty_matched_0_error_log(self):
+        listing_path = write_tmp("")  # empty listing -> 0 sessions
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with self._running_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "index:9.9.9", "command": "echo hi"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["sent"], [])
+        self.assertEqual(payload["matched"], 0)
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "error")
+        self.assertIn("NOT DELIVERED", entry["message"])
+
+    def test_api_send_one_match_response_shape_unchanged_no_matched_field(self):
+        # Regression: the pre-existing {"sent": hits} shape and 200 status
+        # for a real delivery must be untouched -- "matched" is a NEW field
+        # that only appears on the 0-match path (spec S2: "add ... never by
+        # mutating an old one").
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with self._running_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"}
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sent"]), 1)
+        self.assertEqual(payload["sent"][0]["index"], "1.1.1")
+        self.assertNotIn("matched", payload)
+        entry = self._last_log_entry()
+        self.assertEqual(entry["kind"], "send")
+
+
+# --------------------------------------------------------------------------- #
+# G11 -- Origin/Host allowlist guard (BACKLOG #12 --
+# docs/specs/admin-api-origin-hardening.md). Same hermeticity rules as G10:
+# JOBS_FILE/ACTIVITY_FILE monkeypatched to a throwaway tempfile.mkdtemp(),
+# never the real ones; server always on an OS-assigned ephemeral port, never
+# 8765 (_web_admin_server() asserts this); fake osascript on PATH via
+# hermetic_env(), never a real one. AC-1's load-bearing assertion throughout
+# is that the fake osascript's call log stays EMPTY on a rejected request --
+# the status code alone proves nothing (this product's three worst defects
+# were all "the test passes whether or not the code is right").
+# --------------------------------------------------------------------------- #
+class G11OriginHostGuard(unittest.TestCase):
+    def setUp(self):
+        self._orig_jobs_file = iterm_web.JOBS_FILE
+        self._orig_activity_file = iterm_web.ACTIVITY_FILE
+        self._orig_extra_origins = list(iterm_web.EXTRA_ALLOWED_ORIGINS)
+        self._orig_window = iterm_web.REJECTION_LOG_WINDOW_SECONDS
+        self._orig_clock = iterm_web._REJECTION_CLOCK
+        self._tmp_dir = tempfile.mkdtemp(prefix="itermon-web-guard-test-")
+        iterm_web.JOBS_FILE = os.path.join(self._tmp_dir, "iterm_jobs.json")
+        iterm_web.ACTIVITY_FILE = os.path.join(self._tmp_dir, "activity.log")
+        iterm_web._log.clear()
+        iterm_web._rejection_state = {"last_logged_at": None, "suppressed": 0}
+
+    def tearDown(self):
+        iterm_web.JOBS_FILE = self._orig_jobs_file
+        iterm_web.ACTIVITY_FILE = self._orig_activity_file
+        iterm_web.EXTRA_ALLOWED_ORIGINS = self._orig_extra_origins
+        iterm_web.REJECTION_LOG_WINDOW_SECONDS = self._orig_window
+        iterm_web._REJECTION_CLOCK = self._orig_clock
+        iterm_web._log.clear()
+        iterm_web._rejection_state = {"last_logged_at": None, "suppressed": 0}
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _three_session_listing() -> str:
+        SEP = iterm_ctl.SEP
+        return (
+            f"1.1.1{SEP}ID-A{SEP}/dev/ttys001{SEP}alpha\n"
+            f"1.1.2{SEP}ID-B{SEP}/dev/ttys002{SEP}beta\n"
+            f"1.1.3{SEP}ID-C{SEP}/dev/ttys003{SEP}gamma\n"
+        )
+
+    def _post(self, port, path, body, headers=None):
+        data = json.dumps(body).encode()
+        base_headers = {"Content-Type": "application/json"}
+        base_headers.update(headers or {})
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=data, headers=base_headers, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    # -- AC-1: the exploit is closed --
+    def test_ac1_exploit_is_closed_zero_osascript_calls(self):
+        listing_path = write_tmp(self._three_session_listing())
+        fake_log = write_tmp("")
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path, ITERMON_FAKE_LOG=fake_log):
+            with _web_admin_server() as port:
+                status, payload = self._post(
+                    port, "/api/send",
+                    {"target": "__all__", "command": "echo pwned", "submit": True},
+                    headers={"Content-Type": "text/plain", "Origin": "https://evil.example"},
+                )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload, {"error": "forbidden"})
+        with open(fake_log, encoding="utf-8") as f:
+            self.assertEqual(
+                f.read(), "",
+                "fake osascript recorded a call -- the exploit was NOT closed "
+                "(the status-code assertion alone does not satisfy AC-1)",
+            )
+
+    # -- AC-2: Origin: null is rejected --
+    def test_ac2_origin_null_is_rejected(self):
+        listing_path = write_tmp(self._three_session_listing())
+        fake_log = write_tmp("")
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path, ITERMON_FAKE_LOG=fake_log):
+            with _web_admin_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "__all__", "command": "echo pwned"},
+                    headers={"Origin": "null"},
+                )
+        self.assertEqual(status, 403)
+        self.assertEqual(payload, {"error": "forbidden"})
+        with open(fake_log, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "")
+
+    # -- AC-3: DNS rebinding is closed, across every endpoint that touches osascript --
+    def test_ac3_dns_rebinding_bad_host_rejected_across_endpoints(self):
+        listing_path = write_tmp(self._three_session_listing())
+        fake_log = write_tmp("")
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path, ITERMON_FAKE_LOG=fake_log):
+            with _web_admin_server() as port:
+                bad_host = f"evil.example:{port}"
+                cases = [
+                    ("GET", "/api/sessions", b""),
+                    ("GET", "/api/logs", b""),
+                    ("GET", "/api/jobs", b""),
+                    ("POST", "/api/read", json.dumps({"target": "__all__"}).encode()),
+                ]
+                for method, path, body in cases:
+                    headers = {"Host": bad_host}
+                    if body:
+                        headers["Content-Type"] = "application/json"
+                    resp = _raw_request(port, method, path, headers, body=body)
+                    self.assertEqual(
+                        _raw_status(resp), 403, f"{method} {path} with a bad Host must be rejected"
+                    )
+        with open(fake_log, encoding="utf-8") as f:
+            self.assertEqual(
+                f.read(), "", "list_sessions()/read_contents() must never run for a rejected Host"
+            )
+
+    # -- AC-4: missing Host entirely is rejected --
+    def test_ac4_missing_host_http10_is_rejected(self):
+        with hermetic_env():
+            with _web_admin_server() as port:
+                resp = _raw_send_and_recv(port, b"GET /api/sessions HTTP/1.0\r\n\r\n")
+        self.assertEqual(_raw_status(resp), 403)
+
+    # -- AC-5: the guard runs before any work (jobs/create) --
+    def test_ac5_guard_runs_before_any_work_no_job_created(self):
+        with hermetic_env():
+            with _web_admin_server() as port:
+                status, _payload = self._post(
+                    port, "/api/jobs/create",
+                    {"name": "n", "target": "__all__", "command": "echo hi", "schedule": "0 * * * *"},
+                    headers={"Origin": "https://evil.example"},
+                )
+        self.assertEqual(status, 403)
+        self.assertFalse(
+            os.path.exists(iterm_web.JOBS_FILE), "JOBS_FILE must never be written by a rejected request"
+        )
+        self.assertEqual(iterm_web.load_jobs(), [])
+
+    # -- AC-6: no Origin header = unchanged (byte-identical to pre-fix) --
+    def test_ac6_no_origin_header_send_is_unchanged(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with _web_admin_server() as port:
+                status, payload = self._post(port, "/api/send", {"target": "1.1.1", "command": "echo hi"})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sent"]), 1)
+        self.assertEqual(payload["sent"][0]["index"], "1.1.1")
+        self.assertEqual(iterm_web._log[-1]["kind"], "send")
+
+    # AC-7 (0-match contract still holds) is deliberately NOT duplicated here
+    # -- spec: "G10's AC-7 must still pass unmodified." It does (see G10's
+    # test_ac7_api_send_zero_match_is_200_sent_empty_matched_0_error_log,
+    # untouched by this branch); re-testing it here would just be a second
+    # copy of the same assertion, not new coverage.
+
+    # -- AC-8: every do_* verb is guarded, enumerated at runtime --
+    def test_ac8_every_do_verb_is_guarded(self):
+        with hermetic_env():
+            with _web_admin_server() as port:
+                verbs = sorted(
+                    name[len("do_"):]
+                    for name in dir(iterm_web.Handler)
+                    if name.startswith("do_") and callable(getattr(iterm_web.Handler, name))
+                )
+                self.assertIn("GET", verbs)
+                self.assertIn("POST", verbs)
+                for verb in verbs:
+                    resp = _raw_request(
+                        port, verb, "/", {"Host": f"127.0.0.1:{port}", "Origin": "https://evil.example"}
+                    )
+                    self.assertEqual(_raw_status(resp), 403, f"do_{verb} is not guarded")
+
+    # -- AC-9: same-origin is allowed, both the 127.0.0.1 and localhost spellings --
+    def test_ac9_same_origin_127_is_allowed(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with _web_admin_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"},
+                    headers={"Origin": f"http://127.0.0.1:{port}"},
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sent"]), 1)
+
+    def test_ac9_same_origin_localhost_is_allowed(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with _web_admin_server() as port:
+                body = json.dumps({"target": "1.1.1", "command": "echo hi"}).encode()
+                headers = {
+                    "Host": f"localhost:{port}",
+                    "Origin": f"http://localhost:{port}",
+                    "Content-Type": "application/json",
+                }
+                resp = _raw_request(port, "POST", "/api/send", headers, body=body)
+        self.assertEqual(_raw_status(resp), 200)
+        self.assertEqual(len(_raw_json_body(resp)["sent"]), 1)
+
+    # -- AC-10: the allowlist follows the bound port, not a hard-coded 8765 --
+    def test_ac10_allowlist_follows_bound_port_not_8765(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with _web_admin_server() as port:
+                self.assertNotEqual(port, 8765)
+                ok_status, ok_payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"},
+                    headers={"Origin": f"http://127.0.0.1:{port}"},
+                )
+                bad_status, _bad_payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"},
+                    headers={"Origin": "http://127.0.0.1:8765"},
+                )
+        self.assertEqual(ok_status, 200)
+        self.assertEqual(len(ok_payload["sent"]), 1)
+        self.assertEqual(bad_status, 403)
+
+    # -- AC-11: --allow-origin works and is validated --
+    def test_ac11_allow_origin_accepts_bare_scheme_host_port(self):
+        iterm_web.validate_allow_origin("http://192.168.1.5:8765")  # must not raise
+        iterm_web.validate_allow_origin(  # must not raise -- BACKLOG #13's future home
+            "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+        )
+
+    def test_ac11_allow_origin_refuses_star(self):
+        with self.assertRaises(ValueError):
+            iterm_web.validate_allow_origin("*")
+
+    def test_ac11_allow_origin_refuses_path_or_trailing_slash(self):
+        with self.assertRaises(ValueError):
+            iterm_web.validate_allow_origin("http://192.168.1.5:8765/admin")
+        with self.assertRaises(ValueError):
+            iterm_web.validate_allow_origin("http://192.168.1.5:8765/")
+
+    def test_ac11_extra_origin_is_honored_end_to_end(self):
+        listing = f"1.1.1{iterm_ctl.SEP}ID-A{iterm_ctl.SEP}/dev/ttys001{iterm_ctl.SEP}alpha\n"
+        listing_path = write_tmp(listing)
+        iterm_web.EXTRA_ALLOWED_ORIGINS = ["chrome-extension://abcdefghijklmnopabcdefghijklmnop"]
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path):
+            with _web_admin_server() as port:
+                status, payload = self._post(
+                    port, "/api/send", {"target": "1.1.1", "command": "echo hi"},
+                    headers={"Origin": "chrome-extension://abcdefghijklmnopabcdefghijklmnop"},
+                )
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["sent"]), 1)
+
+    def test_ac11_cli_refuses_star_at_startup_nonzero_exit(self):
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO_ROOT, "iterm_web.py"), "--allow-origin", "*"],
+            capture_output=True, text=True, timeout=10, cwd=REPO_ROOT, env=_build_hermetic_env(),
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("allow-origin", proc.stderr.lower())
+
+    def test_ac11_cli_refuses_path_at_startup_nonzero_exit(self):
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO_ROOT, "iterm_web.py"),
+             "--allow-origin", "http://x.example/path"],
+            capture_output=True, text=True, timeout=10, cwd=REPO_ROOT, env=_build_hermetic_env(),
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+    # -- AC-12: rejection logging is rate-limited, with a suppressed count --
+    def test_ac12_rejection_logging_rate_limited_with_suppressed_count(self):
+        # A manually-advanced fake clock -- never a real sleep (spec 4.3).
+        # Values: first rejection at t=0.0 (logs immediately); three more at
+        # 0.01/0.02/0.03 (all within the 0.05s window -- suppressed); a
+        # fifth at t=0.06 (window has elapsed since t=0.0 -- logs again,
+        # naming the 3 suppressed in between).
+        clock_values = iter([0.0, 0.01, 0.02, 0.03, 0.06])
+        iterm_web._REJECTION_CLOCK = lambda: next(clock_values)
+        iterm_web.REJECTION_LOG_WINDOW_SECONDS = 0.05
+        with hermetic_env():
+            with _web_admin_server() as port:
+                for _ in range(5):
+                    self._post(
+                        port, "/api/send", {"target": "x", "command": "y"},
+                        headers={"Origin": "https://evil.example"},
+                    )
+        error_entries = [e for e in iterm_web._log if e["kind"] == "error"]
+        self.assertEqual(len(error_entries), 2, f"expected exactly 2 log entries, got {error_entries}")
+        self.assertIn("+3 more suppressed", error_entries[1]["message"])
+
+    # -- AC-13: no new per-request cost -- rejected requests spawn nothing --
+    def test_ac13_rejected_requests_spawn_nothing(self):
+        listing_path = write_tmp(self._three_session_listing())
+        fake_log = write_tmp("")
+        # Large window so the whole burst logs at most once (the ONE
+        # deliberate, capped write spec 4.3 allows) -- this test is about
+        # subprocess/JOBS_FILE, not about re-proving AC-12's rate limiting.
+        iterm_web.REJECTION_LOG_WINDOW_SECONDS = 9999
+        with hermetic_env(ITERMON_FAKE_LISTING=listing_path, ITERMON_FAKE_LOG=fake_log):
+            with _web_admin_server() as port:
+                for _ in range(20):
+                    self._post(
+                        port, "/api/send", {"target": "__all__", "command": "echo pwned"},
+                        headers={"Origin": "https://evil.example"},
+                    )
+        with open(fake_log, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "", "a rejected request must never spawn osascript")
+        self.assertFalse(os.path.exists(iterm_web.JOBS_FILE), "a rejected request must never touch JOBS_FILE")
+
+    # -- AC-14: packaging unchanged, no version bump --
+    def test_ac14_packaging_unchanged_files_and_no_version_bump(self):
+        with open(os.path.join(REPO_ROOT, "package.json"), encoding="utf-8") as f:
+            pkg = json.load(f)
+        self.assertEqual(
+            pkg["files"],
+            ["iterm_ctl.py", "iterm_web.py", "iterm_mcp.py", "start.sh", "README.md", "LICENSE"],
+        )
+        self.assertEqual(pkg["version"], "1.3.0", "no version bump on this branch (spec section 8)")
+        if shutil.which("npm"):
+            proc = subprocess.run(
+                ["npm", "pack", "--dry-run", "--json"],
+                capture_output=True, text=True, cwd=REPO_ROOT, timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            names = sorted(entry["path"] for entry in data[0]["files"])
+            expected = sorted(
+                ["LICENSE", "README.md", "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py",
+                 "package.json", "start.sh"]
+            )
+            self.assertEqual(names, expected)
+
+    # -- AC-D1/AC-D2: documentation --
+    def test_acd1_readme_no_auth_claim_replaced_with_accurate_statement(self):
+        with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as f:
+            readme = f.read()
+        self.assertNotIn("Bound to `127.0.0.1` only (local, no auth).", readme)
+        self.assertIn("no authentication", readme.lower())
+        self.assertIn("--allow-origin", readme)
+
+    def test_acd2_changelog_unreleased_has_security_section(self):
+        with open(os.path.join(REPO_ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            changelog = f.read()
+        unreleased_idx = changelog.index("## [Unreleased]")
+        next_heading_idx = changelog.index("## [1.3.0]")
+        unreleased_block = changelog[unreleased_idx:next_heading_idx]
+        self.assertIn("### Security", unreleased_block)
+        self.assertIn("curl", unreleased_block.lower())
+
+
+# --------------------------------------------------------------------------- #
 # --twice: determinism harness (spec section 4, G7)
 # --------------------------------------------------------------------------- #
 def _run_once():
@@ -1236,6 +1845,8 @@ def _load_suite() -> unittest.TestSuite:
         G6MCPWireProtocol,
         G8TmuxBackendHermetic,
         G9TmuxBackendLive,
+        G10ZeroMatchIsAFailure,
+        G11OriginHostGuard,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     return suite

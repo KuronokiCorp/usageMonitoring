@@ -7,9 +7,9 @@ section 5, "non-vacuity"). Run with:
 This is the part L6 is actually about: a test suite that is green proves
 nothing by itself unless it can also be shown to go red. This script:
 
-  1. Copies the runtime files this suite pins (iterm_ctl.py, iterm_mcp.py)
-     plus the tests/ tree into a throwaway tempfile.mkdtemp() directory --
-     never touches the working tree.
+  1. Copies the runtime files this suite pins (iterm_ctl.py, iterm_mcp.py,
+     iterm_web.py) plus the tests/ tree into a throwaway tempfile.mkdtemp()
+     directory -- never touches the working tree.
   2. Confirms the suite is green against an *unmutated* copy first (a false
      "every mutation was caught" result is meaningless if the baseline was
      already red for an unrelated reason).
@@ -17,8 +17,10 @@ nothing by itself unless it can also be shown to go red. This script:
      and runs the suite against the mutated copy.
   4. Asserts each mutation makes the suite FAIL, and records which test(s)
      caught it.
-  5. Exits 0 only if the baseline was green AND all five mutations were
-     caught. Any survivor is reported by name and the harness exits 1.
+  5. Exits 0 only if the baseline was green AND every mutation in MUTATIONS
+     was caught (see len(MUTATIONS) below -- not hand-counted in this
+     docstring, so it can't go stale again). Any survivor is reported by
+     name and the harness exits 1.
 
 Exits non-zero (and says why) if the working tree differs before vs. after --
 this harness must never be the thing that dirties the repo it's testing.
@@ -158,6 +160,25 @@ MUTATIONS = [
         ),
     ),
     dict(
+        id="M8",
+        file="iterm_web.py",
+        group="G10 (run_job 0-match failure, spec stable-job-targets-and-zero-match-failure S2)",
+        old=(
+            '    hits = do_send(target, command, submit)\n'
+            "    if len(hits) == 0:\n"
+            "        log_event(\n"
+            '            "error",\n'
+            "            f'job \"{name}\" ({target}) matched 0 sessions — NOT DELIVERED: {command!r}',\n"
+            "        )\n"
+            '        return {"status": "MATCHED 0 SESSIONS — not delivered", "sent": 0}\n'
+            '    who = ", ".join(h["index"] for h in hits)\n'
+        ),
+        new=(
+            '    hits = do_send(target, command, submit)\n'
+            '    who = ", ".join(h["index"] for h in hits) or "no match"\n'
+        ),
+    ),
+    dict(
         id="M5",
         file="iterm_mcp.py",
         group="G6 (MCP unknown-tool soft error, bb119d8)",
@@ -185,16 +206,61 @@ MUTATIONS = [
             "            is_error = True\n"
         ),
     ),
+    dict(
+        id="M9",
+        file="iterm_web.py",
+        group="G11 (Origin check, spec admin-api-origin-hardening AC-16)",
+        old=(
+            "        elif origin is None:\n"
+            "            reason = None  # no Origin header at all -- curl/scripts, always allowed\n"
+            "        elif origin == \"null\":\n"
+            "            reason = \"Origin: null\"\n"
+            "        elif origin not in allowed_origins_for(bound_host, bound_port):\n"
+            "            reason = \"Origin not allowlisted\"\n"
+        ),
+        new=(
+            "        elif origin is None:\n"
+            "            reason = None  # no Origin header at all -- curl/scripts, always allowed\n"
+            "        else:\n"
+            "            reason = None  # BUG: Origin is no longer checked at all\n"
+        ),
+    ),
+    dict(
+        id="M10",
+        file="iterm_web.py",
+        group="G11 (Host check, spec admin-api-origin-hardening AC-16)",
+        old=(
+            "        if host is None:\n"
+            "            reason = \"missing Host header\"\n"
+            "        elif host.lower() not in allowed_hosts_for(bound_host, bound_port):\n"
+            "            reason = \"Host not allowlisted\"\n"
+        ),
+        new=(
+            "        if host is None:\n"
+            "            reason = None  # BUG: missing Host is no longer rejected\n"
+            "        elif False:\n"
+            "            reason = \"Host not allowlisted\"\n"
+        ),
+    ),
 ]
 
 
 def _fresh_copy() -> str:
-    """A throwaway copy of the repo files this suite touches: the two
-    runtime files under test, iterm_web.py/start.sh (copied inert, nothing
-    in the suite reaches them, but keeps the tree shape honest), and the
-    tests/ directory itself."""
+    """A throwaway copy of the repo files this suite touches: iterm_ctl.py,
+    iterm_mcp.py, and (as of docs/specs/stable-job-targets-and-zero-match-
+    failure.md's G10 tests) iterm_web.py -- run_job()/the /api/send handler
+    are exercised for real, in-process, against a throwaway HTTP server on
+    an ephemeral port; start.sh stays copied inert (nothing in the suite
+    reaches it, kept only so the tree shape is honest); package.json,
+    README.md, and CHANGELOG.md are copied read-only (as of
+    docs/specs/admin-api-origin-hardening.md's G11 AC-14/AC-D1/AC-D2 tests,
+    which read them directly and would otherwise fail on a baseline copy for
+    a reason unrelated to any mutation); plus the tests/ directory itself."""
     tmp = tempfile.mkdtemp(prefix="itermon-counter-test-")
-    for name in ("iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "start.sh"):
+    for name in (
+        "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "start.sh",
+        "package.json", "README.md", "CHANGELOG.md",
+    ):
         src = os.path.join(REPO_ROOT, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(tmp, name))

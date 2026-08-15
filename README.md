@@ -188,6 +188,7 @@ the same table `iterm-ctl backends` prints:
 | Selector        | Example         | Notes                                            |
 |-----------------|-----------------|--------------------------------------------------|
 | index           | `3.1.1` (iTerm2) / `work:2.0` (tmux) | window.tab.session (iTerm2) or session:window.pane (tmux). **Positional on iTerm2 — shifts when windows open/close; tmux pane addresses don't have this problem (see below).** |
+| `index:VALUE`   | `index:3.1.1`   | explicit spelling of the row above — same exact-match semantics, no substring fallback. Interchangeable with the bare form. |
 | bare id         | `%3` (tmux)     | tmux pane id, typed bare — same as `id:%3`       |
 | `id:PREFIX`     | `id:C86EE5` (iTerm2) / `id:%3` (tmux) | matches the stable id (UUID prefix on iTerm2, exact `%N` on tmux). **Most reliable on iTerm2.** |
 | `tty:NNN`       | `tty:ttys002`   | matches the device tty                           |
@@ -220,7 +221,14 @@ Every pane, however deeply nested, gets its own stable UUID and can be targeted
 individually (or with `--all`, which hits every pane in every tab in every
 window). Only the leading window number is positional — the frontmost window is
 always window 1, so those numbers shift as you focus/open/close windows; the
-UUID does not, which is why scheduled jobs target by `id:`.
+UUID does not shift when windows are merely reordered. But the UUID does **not**
+survive session recreation — killing and reopening a pane mints a brand-new
+UUID, so an `id:` target silently stops matching anything. A recreated session
+usually lands back in the same window/tab/pane position, so **scheduled jobs
+target by `index:` instead**: it keeps delivering across recreation, at the cost
+of matching the wrong neighbour if you reorder windows yourself in the
+meantime — an acceptable trade for an unattended job, not for an interactive
+`send`.
 
 On the **tmux backend**, the equivalent structure is **session → window →
 pane**, and the index is `session:window.pane` (e.g. `work:2.0`), which is
@@ -242,7 +250,26 @@ npm run start:open           # …and open the browser
 npm start -- --port 9000     # custom port
 ```
 
-Bound to `127.0.0.1` only (local, no auth). Panels:
+Bound to `127.0.0.1` by default, **no authentication** — there is no password or token,
+by design (see below). What actually protects it: every request is checked against an
+`Origin`/`Host` allowlist derived from the address it's bound to, **before** the request
+is read or routed at all. A browser tab from any other site — the classic "malicious web
+page silently POSTs to your local admin API" attack — is rejected with `403`. This is a
+**browser-only** defense: `curl`, scripts, and anything else running as a local process on
+your machine sends no `Origin` header and is **not** authenticated by this check — it is
+obeyed exactly as before. An XSS in the admin page itself, or another local process, can
+still reach the API; this fix closes drive-by browser requests and DNS rebinding, nothing
+more. If you bind to a LAN address and need to browse it by hostname (or you're wiring up
+a browser extension), add its origin explicitly:
+
+```bash
+npm start -- --allow-origin http://192.168.1.5:8765
+npm start -- --allow-origin chrome-extension://<extension-id>
+```
+
+`--allow-origin` is repeatable, additive to the built-in loopback allowlist, and validated
+at startup — a bare `*` or anything with a path is refused rather than silently widening
+what's allowed. Panels:
 
 1. **Sessions** — live auto-refreshing list; click *use* to target one.
 2. **Send a command** — pick a session, type a message, Send. The **Submit**
