@@ -11,13 +11,16 @@ reconstructed from git history for reference; they were not written at the time.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-15
+
 ### Security
 - **Closed a remote-code-execution hole in the web admin's API (BACKLOG #12).** Before this
   fix, `iterm_web.py` served `/api/send` (and every other `/api/*` route) with no `Origin`
   check, no `Host` check, and no authentication. Any web page you visited could silently
   POST a `text/plain`-labelled request — a CORS "simple request", no preflight — and have
   it typed and Entered into **every one of your terminal sessions**, including Claude Code
-  panes with tool permissions.
+  panes with tool permissions. **If you have `itermon` web admin (`iterm-admin`) running,
+  upgrade to 1.4.0.**
 - **Fix: an `Origin` + `Host` allowlist, both fail-closed.** Every request is checked
   *before* its body is read and *before* any routing, on every HTTP verb — not something a
   future handler can accidentally bypass. A request with a `Host` header that isn't
@@ -39,6 +42,40 @@ reconstructed from git history for reference; they were not written at the time.
   process on your machine can still call the API with no `Origin` and be obeyed. An XSS in
   the admin page itself bypasses this fix entirely (same origin). `Content-Type` is
   deliberately *not* validated (that would also break `curl -d`).
+
+### Fixed
+- **A rotted scheduled-job target used to fail silently (BACKLOG #6).** `iterm_web.py`'s
+  `run_job()` and `/api/send` used to log a 0-match send exactly like a legitimate empty
+  one — status `"sent to 0 session(s)"`, log kind `"send"` — which is how a stale target
+  went 20 days without a visible error. A 0-match send now logs kind `"error"` naming the
+  job/target and returns a distinct status: `"MATCHED 0 SESSIONS — not delivered"` from the
+  scheduler, and a new `"matched": 0` field from `/api/send` (the existing `{"sent": N}`
+  key and `200` status are unchanged, since scripts posting to this endpoint depend on
+  both — no breaking change to the response shape). A 1-or-more-match send is
+  byte-identical to before. The admin UI's job list and manual-send result box render the
+  0-match case in the existing error colour instead of a bare "ok".
+- **The admin UI stopped minting session-UUID (`id:`) targets for scheduled jobs** — the
+  root cause of the rot above. iTerm2 mints a fresh session UUID on every session
+  recreation, so a job saved as `id:<uuid>` was guaranteed to rot on the next restart. The
+  job-creation picker (both "ALL sessions" and individually-ticked rows) now writes
+  `index:<idx>` instead — a positional address that survives recreation in the same pane
+  position. The manual-send dropdown and the sessions table's "use" button are
+  **unchanged on purpose**: a manual send happens seconds after the page loads, where the
+  UUID is the most precise handle available and has no time window to rot in. Existing job
+  rows already saved with an `id:` target keep working exactly as before (`id:` selectors
+  are not removed) — only *new* jobs created after upgrading get the rot-resistant target.
+
+### Added
+- **`index:` prefix support in `resolve_targets`.** `iterm-ctl send index:2.1.1 "..."` used
+  to fall through every prefix branch to the bare-substring fallback and return no match,
+  silently — reproduced live before this fix. It's now an explicit selector alongside
+  `id:`/`tty:`/`name:`, with the same exact-string-equality semantics as the pre-existing
+  bare-index fast path (`iterm-ctl send 2.1.1 "..."`) — both spellings are interchangeable.
+  Purely additive: no existing selector's ordering or matching behavior changed.
+
+Everything in this release is additive or a failure-visibility fix; the existing
+`/api/send` request/response contract, `resolve_targets` selector set, and all pre-existing
+CLI/web-admin behavior are preserved. No migration steps.
 
 ## [1.3.0] - 2026-08-07
 
