@@ -223,14 +223,23 @@ document is my call and I have made it.
 
 - **A. Load-unpacked / local only (RECOMMENDED).** Lives in `extension/`, the user enables
   Developer Mode and points Chrome at the folder. **Not an outward act — nothing public, no
-  account, no review, reversible.** Fits where we honestly are: 0 evidenced external users, the
-  distribution test (#0b) not yet run, and item #5 still holding every push, so the public repo
-  still says 1.2.0 while npm serves 1.3.0. Cost: no auto-update, and Developer Mode is friction.
+  account, no review, reversible.** Fits where we honestly are: 0 evidenced external users and the
+  distribution test (#0b) not yet run. Cost: no auto-update, and Developer Mode is friction.
 - **B. Publish to the Chrome Web Store.** Real install flow, auto-update, discoverable. But it is
   an **outward act**: $5 developer account, Google review, a public privacy-policy/listing that
   ties VecTech's name to the product, and a permissions justification for `127.0.0.1` access.
   It would also be the *second* thing we ever put in public before we have told a single human
-  the product exists, pointing reviewers at a repo a version behind npm.
+  the product exists.
+
+  > **Corrected 2026-08-15, end of session.** I first wrote that B would point reviewers at a
+  > public repo a version behind npm. **That is no longer true** — `origin/main` was pushed at
+  > ~09:02 today and now serves **1.3.0**, matching npm. But the same push published **42 internal
+  > worklog files, `BACKLOG.md`, the briefs, the dispatches and the distribution drafts**, and
+  > **item #5 did not land** — nothing was split out. So the objection to B is now *stronger,
+  > differently*: a Web Store listing is a signpost pointing strangers at our internal records,
+  > including this document's own §3 (an unpatched RCE) and our candid "0 stars, no evidenced
+  > external user" assessment. **Recommendation unchanged; reasoning replaced.** Full finding:
+  > `docs/worklog/usagemonitoring-product-manager/2026-08-15.md`.
 - **C. Defer the decision until the extension exists and #0b's evidence bar (3 real users) is
   met.** Build under A, revisit the store with evidence.
 
