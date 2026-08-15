@@ -11,6 +11,35 @@ reconstructed from git history for reference; they were not written at the time.
 
 ## [Unreleased]
 
+### Security
+- **Closed a remote-code-execution hole in the web admin's API (BACKLOG #12).** Before this
+  fix, `iterm_web.py` served `/api/send` (and every other `/api/*` route) with no `Origin`
+  check, no `Host` check, and no authentication. Any web page you visited could silently
+  POST a `text/plain`-labelled request — a CORS "simple request", no preflight — and have
+  it typed and Entered into **every one of your terminal sessions**, including Claude Code
+  panes with tool permissions.
+- **Fix: an `Origin` + `Host` allowlist, both fail-closed.** Every request is checked
+  *before* its body is read and *before* any routing, on every HTTP verb — not something a
+  future handler can accidentally bypass. A request with a `Host` header that isn't
+  allowlisted is rejected (closes DNS rebinding too); a request with an `Origin` present but
+  not allowlisted, or `Origin: null`, is rejected with `403 {"error":"forbidden"}`. The
+  allowlist is always derived from the address the server is actually bound to, never a
+  hard-coded port.
+- **`curl` and scripts are unaffected.** They send no `Origin` header at all, and "no
+  `Origin`" is explicitly an allow — the one asymmetry the whole fix rests on: browsers
+  always attach `Origin` to a cross-origin request like this; `curl`/`wget`/`requests`/shell
+  scripts never do. No token, no breaking change, no major version bump.
+- New `--allow-origin ORIGIN` flag (repeatable, additive, opt-in) for binding to a LAN
+  address you browse by hostname, or for a future browser extension
+  (`chrome-extension://<id>`) — validated at startup, refuses `*` and anything with a path.
+- Rejected-request logging is rate-limited (first rejection immediately, then at most once
+  per 60s with a suppressed-count) so a drive-by attempt can't be used to fill the disk via
+  the Activity log.
+- **Honest limits, stated plainly:** this does not authenticate anything — any other local
+  process on your machine can still call the API with no `Origin` and be obeyed. An XSS in
+  the admin page itself bypasses this fix entirely (same origin). `Content-Type` is
+  deliberately *not* validated (that would also break `curl -d`).
+
 ## [1.3.0] - 2026-08-07
 
 ### Added
