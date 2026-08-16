@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>itermon control panel</title>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<header id="appHeader">
+  <span id="statusPill" class="pill unknown">unknown</span>
+  <span id="baseUrlDisplay" class="mono muted"></span>
+  <button id="refreshBtn" type="button">Refresh</button>
+  <a id="openAdminLink" href="#" target="_blank" rel="noopener">Open admin page</a>
+  <a id="openInTabLink" href="#">Open in tab</a>
+</header>
+
+<div id="errorBanner" class="banner" hidden>
+  <p id="errorBannerMessage"></p>
+  <pre id="errorBannerCommand" class="mono copyblock" hidden></pre>
+  <button id="errorBannerCopyBtn" type="button" hidden>Copy command</button>
+  <button id="errorBannerRetryBtn" type="button">Retry</button>
+</div>
+
+<nav id="tabBar">
+  <button type="button" class="tabbtn" id="tabBtnSessions" data-tab="sessions">Sessions</button>
+  <button type="button" class="tabbtn" id="tabBtnJobs" data-tab="jobs">Jobs</button>
+  <button type="button" class="tabbtn" id="tabBtnLog" data-tab="log">Log</button>
+  <button type="button" class="tabbtn" id="tabBtnSend" data-tab="send">Send</button>
+  <button type="button" class="tabbtn" id="tabBtnSettings" data-tab="settings">Settings</button>
+</nav>
+
+<main>
+  <!-- Sessions -->
+  <section id="tabSessions" class="tabpanel">
+    <h2>Sessions</h2>
+    <table>
+      <thead><tr><th>index</th><th>name</th><th>job</th><th>tty</th></tr></thead>
+      <tbody id="sessionsTableBody"></tbody>
+    </table>
+  </section>
+
+  <!-- Jobs -->
+  <section id="tabJobs" class="tabpanel">
+    <h2>Scheduled jobs</h2>
+    <table>
+      <thead>
+        <tr><th>name</th><th>target</th><th>schedule</th><th>enabled</th>
+            <th>next run</th><th>last run</th><th>last status</th><th></th></tr>
+      </thead>
+      <tbody id="jobsTableBody"></tbody>
+    </table>
+
+    <h3>Register a job</h3>
+    <form id="jobCreateForm">
+      <label for="jobName">Name</label>
+      <input id="jobName" type="text" required>
+
+      <label>Target session(s)</label>
+      <div id="jobTargets">
+        <label class="checkrow">
+          <input type="checkbox" id="jobSelectAll"> <span>Select all sessions (one job per session)</span>
+        </label>
+        <div id="jobTargetList"></div>
+      </div>
+
+      <label for="jobCommand">Command</label>
+      <textarea id="jobCommand" required></textarea>
+
+      <label for="jobSchedule">Schedule (cron: min hour dom mon dow)</label>
+      <input id="jobSchedule" class="mono" type="text" placeholder="0 * * * *" required>
+
+      <label class="checkrow">
+        <input type="checkbox" id="jobSubmit">
+        <span>press Enter after typing (this executes the command)</span>
+      </label>
+
+      <p id="jobCreateFieldError" class="err" hidden></p>
+      <button id="jobCreateReviewBtn" type="button">Review</button>
+    </form>
+  </section>
+
+  <!-- Log -->
+  <section id="tabLog" class="tabpanel">
+    <h2>Activity log</h2>
+    <label for="logKindFilter">Filter</label>
+    <select id="logKindFilter">
+      <option value="all">all</option>
+      <option value="error">error</option>
+      <option value="send">send</option>
+      <option value="job">job</option>
+    </select>
+    <table>
+      <thead><tr><th>t</th><th>kind</th><th>message</th></tr></thead>
+      <tbody id="logTableBody"></tbody>
+    </table>
+  </section>
+
+  <!-- Send -->
+  <section id="tabSend" class="tabpanel">
+    <h2>Send a command</h2>
+    <form id="sendForm">
+      <label for="sendTarget">Target session</label>
+      <select id="sendTarget"></select>
+
+      <label for="sendCommand">Command / message</label>
+      <textarea id="sendCommand" required></textarea>
+
+      <label class="checkrow">
+        <input type="checkbox" id="sendSubmit">
+        <span>press Enter after typing (this executes the command)</span>
+      </label>
+
+      <button id="sendReviewBtn" type="button">Send&hellip;</button>
+    </form>
+    <div id="sendResult" class="result" hidden></div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tabSettings" class="tabpanel">
+    <h2>Settings</h2>
+    <form id="settingsForm">
+      <label for="settingsHost">Host</label>
+      <select id="settingsHost">
+        <option value="127.0.0.1">127.0.0.1</option>
+        <option value="localhost">localhost</option>
+      </select>
+
+      <label for="settingsPort">Port</label>
+      <input id="settingsPort" type="number" min="1" max="65535" step="1">
+
+      <label for="settingsPollSeconds">Poll interval</label>
+      <select id="settingsPollSeconds">
+        <option value="30">30 seconds</option>
+        <option value="60">1 minute</option>
+        <option value="300">5 minutes</option>
+        <option value="900">15 minutes</option>
+      </select>
+
+      <label class="checkrow">
+        <input type="checkbox" id="settingsNotifyErrors">
+        <span>Notify on new error log lines</span>
+      </label>
+      <label class="checkrow">
+        <input type="checkbox" id="settingsNotifyJobDrops">
+        <span>Notify when a scheduled job misses its slot</span>
+      </label>
+
+      <p id="settingsFieldError" class="err" hidden></p>
+      <button id="settingsSaveBtn" type="submit">Save</button>
+    </form>
+
+    <h3>Server setup (one time)</h3>
+    <p>
+      itermon only accepts requests from origins it has been told about. Restart itermon
+      with the command below once. Scripts and <code>curl</code> are unaffected -- this
+      changes nothing else.
+    </p>
+    <label for="extensionOriginField">This extension's origin</label>
+    <div class="row">
+      <input id="extensionOriginField" class="mono" type="text" readonly>
+      <button id="copyOriginBtn" type="button">Copy</button>
+    </div>
+
+    <label for="allowOriginCommand">Restart command</label>
+    <div class="row">
+      <pre id="allowOriginCommand" class="mono copyblock"></pre>
+      <button id="copyCommandBtn" type="button">Copy</button>
+    </div>
+    <p class="warn">
+      If you move or rename the extension folder, Chrome gives it a <strong>new ID</strong>
+      and you must re-run this command with the new value.
+    </p>
+
+    <button id="testConnectionBtn" type="button">Test connection</button>
+    <p id="testConnectionResult"></p>
+  </section>
+</main>
+
+<!-- Generic confirm dialog, reused by Send / job run-now / job delete / job
+     create review (AC-40: destructive/executing actions issue their POST
+     ONLY from this dialog's confirm handler, never a direct row click). -->
+<dialog id="confirmDialog">
+  <h3 id="confirmTitle"></h3>
+  <div id="confirmBody"></div>
+  <div id="confirmReviewList"></div>
+  <menu>
+    <button id="confirmNoBtn" type="button">Cancel</button>
+    <button id="confirmYesBtn" type="button">Confirm</button>
+  </menu>
+</dialog>
+
+<script type="module" src="panel.js"></script>
+</body>
+</html>
