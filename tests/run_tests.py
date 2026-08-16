@@ -1790,6 +1790,427 @@ class G11OriginHostGuard(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
+# G12 -- Chrome extension control panel + notifier (BACKLOG #13, spec
+# docs/specs/chrome-extension-control-panel.md). Structural/cheap suite
+# tests only (AC-1..AC-20, AC-22..AC-24, AC-37..AC-43) -- Dida owns the
+# counter-test mutations (M11-M18) and the real-Chrome verifications
+# (AC-30..AC-36, AC-47..AC-50). AC-21 is superseded by AC-42 and is not
+# implemented. AC-24 ("suite integrity") is validated operationally by
+# running `python3 tests/run_tests.py --twice` and `python3
+# tests/counter_test.py` directly, the same way G10/G11's equivalent
+# properties are -- there is no in-suite unittest that re-invokes the suite
+# recursively.
+#
+# The node-driven tests (notify_logic.js's pure functions, panel.js's pure
+# buildJobCreationPlan(), background.js's pollTick() with a stub fetch) must
+# run with the REAL system PATH, not the hermetic FAKE_DIR-only PATH the
+# rest of this file's tests run under -- `node` itself touches no iTerm2/
+# osascript/ps fakery at all (it just executes plain JS in V8), so handing
+# it REAL_PATH does not weaken the hermeticity property those fakes exist
+# for. Every such test skips cleanly, with an explicit message, if `node`
+# is not found -- per spec section 10.2, "it must never pass silently."
+# --------------------------------------------------------------------------- #
+EXT_DIR = os.path.join(REPO_ROOT, "extension")
+
+
+def _node_bin():
+    return shutil.which("node", path=REAL_PATH) or shutil.which("node")
+
+
+def _run_node_script(rel_path: str):
+    node = _node_bin()
+    if not node:
+        return None
+    script = os.path.join(TESTS_DIR, rel_path)
+    env = dict(os.environ)
+    env["PATH"] = REAL_PATH or env.get("PATH", "")
+    return subprocess.run(
+        [node, script], capture_output=True, text=True, timeout=30, env=env, cwd=REPO_ROOT
+    )
+
+
+def _read_extension_file(*parts: str) -> str:
+    with open(os.path.join(EXT_DIR, *parts), encoding="utf-8") as f:
+        return f.read()
+
+
+def _manifest() -> dict:
+    return json.loads(_read_extension_file("manifest.json"))
+
+
+def _package_json() -> dict:
+    with open(os.path.join(REPO_ROOT, "package.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _iter_extension_files():
+    for root, _dirs, files in os.walk(EXT_DIR):
+        for name in files:
+            yield os.path.join(root, name)
+
+
+def _extract_marked_region(source: str, start_marker: str, end_marker: str) -> str:
+    start = source.index(start_marker)
+    end = source.index(end_marker)
+    return source[start:end]
+
+
+def _extract_js_function(source: str, name: str) -> str:
+    """Return the full source of `function name(...) { ... }`, matched by
+    brace-depth counting from the marker to the closing brace. Good enough
+    for this file's straight-line functions (no braces inside string/regex
+    literals in the functions this is used on -- checked by hand)."""
+    marker = f"function {name}("
+    start = source.index(marker)
+    brace_start = source.index("{", start)
+    depth = 0
+    i = brace_start
+    while i < len(source):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : i + 1]
+        i += 1
+    raise AssertionError(f"unbalanced braces extracting function {name}()")
+
+
+def _git_env():
+    """git, like node/npm, is not on the hermetic FAKE_DIR-only PATH this
+    file wraps the whole suite in -- it never touches iTerm2/osascript/ps,
+    so handing it REAL_PATH doesn't weaken that hermeticity property."""
+    env = dict(os.environ)
+    env["PATH"] = REAL_PATH or env.get("PATH", "")
+    return env
+
+
+def _git(*args):
+    git = shutil.which("git", path=REAL_PATH) or shutil.which("git")
+    if not git:
+        return None
+    try:
+        return subprocess.run(
+            [git, *args], capture_output=True, text=True, cwd=REPO_ROOT, timeout=15, env=_git_env()
+        )
+    except FileNotFoundError:
+        return None
+
+
+def _git_merge_base_with_develop():
+    inside = _git("rev-parse", "--is-inside-work-tree")
+    if inside is None or inside.returncode != 0 or inside.stdout.strip() != "true":
+        return None
+    mb = _git("merge-base", "HEAD", "develop")
+    if mb is None or mb.returncode != 0:
+        return None
+    return mb.stdout.strip()
+
+
+class G12ChromeExtension(unittest.TestCase):
+    # ----------------------------------------------------------------- #
+    # Packaging and repo hygiene
+    # ----------------------------------------------------------------- #
+
+    # -- AC-1: the npm file list is unchanged, no extension/ path appears.
+    # Guarded by BOTH shutil.which("npm") and LICENSE's existence (spec's
+    # own instruction) -- counter_test.py's _fresh_copy() is a PARTIAL copy
+    # of the tree that does not include LICENSE, so an unguarded assertion
+    # would go red on that baseline for a reason unrelated to any mutation.
+    def test_ac1_npm_file_list_excludes_extension(self):
+        npm = shutil.which("npm", path=REAL_PATH) or shutil.which("npm")
+        if not npm or not os.path.exists(os.path.join(REPO_ROOT, "LICENSE")):
+            self.skipTest("npm not on PATH or LICENSE not present in this copy -- AC-1 skipped cleanly")
+        env = dict(os.environ)
+        env["PATH"] = REAL_PATH or env.get("PATH", "")
+        proc = subprocess.run(
+            [npm, "pack", "--dry-run", "--json"],
+            capture_output=True, text=True, cwd=REPO_ROOT, timeout=30, env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        names = sorted(entry["path"] for entry in data[0]["files"])
+        expected = sorted(
+            ["LICENSE", "README.md", "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "package.json", "start.sh"]
+        )
+        self.assertEqual(names, expected)
+        self.assertFalse(any(n.startswith("extension/") for n in names))
+
+    # -- AC-2: files array untouched.
+    def test_ac2_files_array_untouched(self):
+        pkg = _package_json()
+        self.assertEqual(
+            pkg["files"],
+            ["iterm_ctl.py", "iterm_web.py", "iterm_mcp.py", "start.sh", "README.md", "LICENSE"],
+        )
+
+    # -- AC-3: no version bump.
+    def test_ac3_no_version_bump(self):
+        merge_base = _git_merge_base_with_develop()
+        if merge_base is None:
+            self.skipTest("no merge-base with develop resolvable in this work-tree -- AC-3 skipped cleanly")
+        show = _git("show", f"{merge_base}:package.json")
+        self.assertIsNotNone(show)
+        self.assertEqual(show.returncode, 0, show.stderr)
+        base_pkg = json.loads(show.stdout)
+        self.assertEqual(_package_json()["version"], base_pkg["version"], "no version bump on this branch (spec section 8)")
+
+    # -- AC-4: the six `files` entries plus package.json are byte-identical
+    # to the branch point (implemented via `git diff --name-only`, per the
+    # spec's own instruction; skips cleanly outside a git work-tree).
+    def test_ac4_shipped_files_byte_identical(self):
+        merge_base = _git_merge_base_with_develop()
+        if merge_base is None:
+            self.skipTest("no merge-base with develop resolvable in this work-tree -- AC-4 skipped cleanly")
+        diff = _git("diff", "--name-only", merge_base, "HEAD")
+        self.assertIsNotNone(diff)
+        self.assertEqual(diff.returncode, 0, diff.stderr)
+        changed = set(diff.stdout.split())
+        protected = {"LICENSE", "README.md", "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "package.json", "start.sh"}
+        overlap = changed & protected
+        self.assertEqual(overlap, set(), f"protected npm files changed on this branch: {overlap}")
+
+    # -- AC-5: no dependencies added.
+    def test_ac5_no_dependencies_added(self):
+        pkg = _package_json()
+        self.assertNotIn("dependencies", pkg)
+        self.assertNotIn("devDependencies", pkg)
+        self.assertFalse(os.path.exists(os.path.join(EXT_DIR, "package.json")))
+        self.assertFalse(os.path.exists(os.path.join(EXT_DIR, "package-lock.json")))
+        self.assertFalse(os.path.exists(os.path.join(EXT_DIR, "node_modules")))
+
+    # -- AC-6: CHANGELOG entry exists.
+    def test_ac6_changelog_added_entry(self):
+        with open(os.path.join(REPO_ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
+            changelog = f.read()
+        unreleased_idx = changelog.index("## [Unreleased]")
+        next_heading_idx = changelog.index("## [1.3.0]")
+        unreleased_block = changelog[unreleased_idx:next_heading_idx]
+        self.assertIn("### Added", unreleased_block)
+        added_idx = unreleased_block.index("### Added")
+        next_idx = unreleased_block.index("###", added_idx + 1)
+        added_block = unreleased_block[added_idx:next_idx]
+        self.assertIn("Chrome extension", added_block)
+        self.assertIn("not part of the npm package", added_block.lower())
+
+    # ----------------------------------------------------------------- #
+    # Manifest
+    # ----------------------------------------------------------------- #
+
+    def test_ac7_manifest_is_mv3(self):
+        manifest = _manifest()
+        self.assertEqual(manifest["manifest_version"], 3)
+
+    def test_ac8_permissions_exactly_three(self):
+        manifest = _manifest()
+        self.assertEqual(set(manifest["permissions"]), {"alarms", "notifications", "storage"})
+
+    def test_ac9_host_permissions_exactly_two(self):
+        manifest = _manifest()
+        self.assertEqual(manifest["host_permissions"], ["http://127.0.0.1/*", "http://localhost/*"])
+
+    def test_ac10_no_content_scripts_key(self):
+        manifest = _manifest()
+        self.assertNotIn("content_scripts", manifest)
+
+    def test_ac11_no_forbidden_strings_in_manifest(self):
+        raw = _read_extension_file("manifest.json")
+        for forbidden in ("tabs", "activeTab", "scripting", "webRequest", "<all_urls>", "*://*/*"):
+            self.assertNotIn(forbidden, raw, f"forbidden string {forbidden!r} found in manifest.json")
+
+    def test_ac12_every_declared_file_exists(self):
+        manifest = _manifest()
+        paths = [manifest["background"]["service_worker"], manifest["action"]["default_popup"]]
+        paths += list(manifest["action"]["default_icon"].values())
+        paths += list(manifest["icons"].values())
+        for rel in paths:
+            self.assertTrue(
+                os.path.exists(os.path.join(EXT_DIR, rel)), f"declared file {rel!r} does not exist under extension/"
+            )
+
+    def test_ac13_extension_version_independent(self):
+        manifest = _manifest()
+        version = manifest["version"]
+        self.assertRegex(version, r"^\d+(\.\d+)*$")
+        self.assertNotEqual(version, _package_json()["version"])
+
+    # ----------------------------------------------------------------- #
+    # The #11 constraint -- background path never touches /api/sessions
+    # ----------------------------------------------------------------- #
+
+    def test_ac14_background_never_touches_sessions_structural(self):
+        background = _read_extension_file("background.js")
+        notify_logic = _read_extension_file("notify_logic.js")
+        self.assertNotIn("/api/sessions", background)
+        self.assertNotIn("/api/sessions", notify_logic)
+        api_paths = set(re.findall(r"/api/[A-Za-z_]+(?:/[A-Za-z_]+)*", background))
+        self.assertEqual(api_paths, {"/api/logs", "/api/jobs"})
+
+    def test_ac15_background_poll_behavioral_via_node(self):
+        proc = _run_node_script("extension_background_poll_driver.mjs")
+        if proc is None:
+            self.skipTest("node not on PATH -- extension_background_poll_driver.mjs skipped cleanly")
+        self.assertEqual(
+            proc.returncode, 0,
+            f"extension_background_poll_driver.mjs failed:\nstdout={proc.stdout}\nstderr={proc.stderr}",
+        )
+
+    def test_ac16_panel_gates_sessions_polling(self):
+        panel = _read_extension_file("panel.js")
+        m = re.search(r"SESSIONS_POLL_MS\s*=\s*(\d+)", panel)
+        self.assertIsNotNone(m, "SESSIONS_POLL_MS constant not found in panel.js")
+        self.assertGreaterEqual(int(m.group(1)), 10000)
+        self.assertIn('isPanelVisible() && isTabActive("sessions")) loadSessions();', panel)
+
+    # ----------------------------------------------------------------- #
+    # The guarded write surface
+    # ----------------------------------------------------------------- #
+
+    def test_ac17_submit_defaults_off_send(self):
+        html = _read_extension_file("panel.html")
+        m = re.search(r'<input[^>]*id="sendSubmit"[^>]*>', html)
+        self.assertIsNotNone(m, "sendSubmit checkbox not found in panel.html")
+        self.assertNotIn("checked", m.group(0))
+        panel = _read_extension_file("panel.js")
+        self.assertIn('const submit = $("sendSubmit").checked;', panel)
+        self.assertIn("submit,", panel)  # threaded into the /api/send POST body
+
+    def test_ac18_send_target_is_select_not_free_text(self):
+        html = _read_extension_file("panel.html")
+        self.assertIn('<select id="sendTarget">', html)
+        self.assertNotRegex(html, r'<input[^>]*id="sendTarget"')
+        self.assertNotRegex(html, r'<textarea[^>]*id="sendTarget"')
+
+    def test_ac19_all_literal_unreachable(self):
+        for path in _iter_extension_files():
+            if path.endswith(".png"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertNotIn("__all__", content, f"'__all__' literal found in {path}")
+
+    def test_ac20_no_stray_hardcoded_port(self):
+        occurrences = []
+        for path in _iter_extension_files():
+            if path.endswith(".png"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            if "8765" in content:
+                occurrences.append(path)
+        self.assertEqual(len(occurrences), 1, f"'8765' must appear exactly once across extension/**, found in: {occurrences}")
+        self.assertTrue(occurrences[0].endswith(os.path.join("extension", "api.js")))
+        api = _read_extension_file("api.js")
+        self.assertIn("port: 8765,", api)
+
+    # AC-21 is superseded by AC-42 -- not implemented (spec explicit).
+
+    # ----------------------------------------------------------------- #
+    # MV3 correctness and hygiene
+    # ----------------------------------------------------------------- #
+
+    def test_ac22_no_inline_js(self):
+        for path in _iter_extension_files():
+            if not path.endswith(".html"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                html = f.read()
+            for m in re.finditer(r"<script[^>]*>(.*?)</script>", html, re.S):
+                self.assertEqual(m.group(1).strip(), "", f"non-empty inline <script> body in {path}")
+            self.assertNotRegex(
+                html, r'\son(click|change|input|submit|load|error|mouseover|keydown|keyup|focus|blur)=',
+                f"on<event>= attribute found in {path}",
+            )
+
+    def test_ac23_no_wallclock_timers_in_background(self):
+        background = _read_extension_file("background.js")
+        self.assertNotIn("setInterval(", background)
+        self.assertIn("chrome.alarms.create(", background)
+
+    # ----------------------------------------------------------------- #
+    # Job write surface -- R1 = B amendment
+    # ----------------------------------------------------------------- #
+
+    @staticmethod
+    def _post_paths_in(text: str) -> set:
+        """Every API path any postJson() call in `text` targets, resolved
+        through this file's own API_* constant declarations -- an exact
+        path-set extraction, not a substring search (AC-37/AC-42's own
+        instruction: create_bulk contains create as a text prefix, so a
+        naive `in` check is guaranteed wrong in one direction or the
+        other)."""
+        const_map = dict(re.findall(r'const (API_[A-Z_]+)\s*=\s*"(/api/[a-zA-Z_/]+)"', text))
+        calls = re.findall(r"postJson\(\s*`\$\{base\(\)\}\$\{(API_[A-Z_]+)\}`", text)
+        return {const_map[name] for name in calls if name in const_map}
+
+    def test_ac37_one_creation_path(self):
+        panel = _read_extension_file("panel.js")
+        paths = self._post_paths_in(panel)
+        self.assertIn("/api/jobs/create_bulk", paths)
+        self.assertNotIn("/api/jobs/create", paths)
+
+    def test_ac38_create_path_targets_are_index_never_id(self):
+        panel = _read_extension_file("panel.js")
+        region = _extract_marked_region(
+            panel, "JOB-TARGET BUILD REGION START", "JOB-TARGET BUILD REGION END"
+        )
+        self.assertRegex(region, r"`index:\$\{|['\"]index:['\"]\s*\+")
+        self.assertNotRegex(region, r"`id:\$\{|['\"]id:['\"]\s*\+")
+
+    def test_ac39_select_all_expands_client_side_via_node(self):
+        proc = _run_node_script("extension_job_plan_driver.mjs")
+        if proc is None:
+            self.skipTest("node not on PATH -- extension_job_plan_driver.mjs skipped cleanly")
+        self.assertEqual(
+            proc.returncode, 0,
+            f"extension_job_plan_driver.mjs failed:\nstdout={proc.stdout}\nstderr={proc.stderr}",
+        )
+
+    def test_ac40_destructive_actions_confirm_gated(self):
+        html = _read_extension_file("panel.html")
+        self.assertIn('<dialog id="confirmDialog">', html)
+        panel = _read_extension_file("panel.js")
+        render_jobs = _extract_js_function(panel, "renderJobs")
+        self.assertNotIn("postJson", render_jobs, "renderJobs()'s row-click wiring must never call postJson directly")
+        confirm_run = _extract_js_function(panel, "confirmRunJob")
+        self.assertIn("API_JOBS_RUN", confirm_run)
+        self.assertIn("postJson", confirm_run)
+        confirm_delete = _extract_js_function(panel, "confirmDeleteJob")
+        self.assertIn("API_JOBS_DELETE", confirm_delete)
+        self.assertIn("postJson", confirm_delete)
+
+    def test_ac41_job_create_submit_defaults_off(self):
+        html = _read_extension_file("panel.html")
+        m = re.search(r'<input[^>]*id="jobSubmit"[^>]*>', html)
+        self.assertIsNotNone(m, "jobSubmit checkbox not found in panel.html")
+        self.assertNotIn("checked", m.group(0))
+        proc = _run_node_script("extension_job_plan_driver.mjs")
+        if proc is None:
+            self.skipTest("node not on PATH -- submit:false end-to-end check skipped cleanly")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_ac42_post_allowlist_exact(self):
+        panel = _read_extension_file("panel.js")
+        paths = self._post_paths_in(panel)
+        expected = {"/api/send", "/api/jobs/toggle", "/api/jobs/create_bulk", "/api/jobs/delete", "/api/jobs/run"}
+        self.assertEqual(paths, expected)
+        # And no OTHER file under extension/ issues a POST at all.
+        for path in _iter_extension_files():
+            if path.endswith("panel.js") or path.endswith("api.js") or path.endswith(".png"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertNotIn("postJson(", content, f"unexpected postJson( call in {path}")
+
+    def test_ac43_background_worker_writes_nothing(self):
+        background = _read_extension_file("background.js")
+        self.assertNotIn("postJson", background)
+        self.assertNotRegex(background, r'method:\s*["\']POST["\']')
+        for forbidden in ("/api/send", "/api/jobs/toggle", "/api/jobs/create_bulk", "/api/jobs/delete", "/api/jobs/run"):
+            self.assertNotIn(forbidden, background)
+
+
+# --------------------------------------------------------------------------- #
 # --twice: determinism harness (spec section 4, G7)
 # --------------------------------------------------------------------------- #
 def _run_once():
@@ -1847,6 +2268,7 @@ def _load_suite() -> unittest.TestSuite:
         G9TmuxBackendLive,
         G10ZeroMatchIsAFailure,
         G11OriginHostGuard,
+        G12ChromeExtension,
     ):
         suite.addTests(loader.loadTestsFromTestCase(cls))
     return suite
