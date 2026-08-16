@@ -325,14 +325,32 @@ MUTATIONS = [
         old='    ? sessions.map((s) => ({ value: `index:${s.index}`, label: `${s.index}  ${s.job || ""}  ${s.name}` }))\n',
         new='    ? sessions.map((s) => ({ value: `id:${s.index}`, label: `${s.index}  ${s.job || ""}  ${s.name}` }))\n',
     ),
+    # M17 was reworked 2026-08-16 (Dida's verification pass) to match the
+    # REAL bypass shape she demonstrated against the shipped code, rather
+    # than the row-handler-wiring shape the spec's own AC-45 text describes.
+    # The row-handler shape (postJson wired straight into the row's onclick,
+    # bypassing confirmDeleteJob() entirely) is still caught -- unconditionally,
+    # not by this mutation -- by AC-40's own `renderJobs()` must-not-contain-
+    # postJson assertion, which was never the vacuous half of the old test.
+    # What WAS vacuous: confirmDeleteJob() firing postJson immediately,
+    # before openConfirm() is ever called, leaving the dialog itself intact
+    # and still shown to the user -- cosmetic, not gating. That shape sailed
+    # through the pre-2026-08-16 AC-40 test on both confirmRunJob() and
+    # confirmDeleteJob() (Dida's write-up, full 122-test suite green both
+    # times); this mutation reproduces it exactly so the counter-test harness
+    # proves the reworked AC-40 test actually catches it.
     dict(
         id="M17",
         file="extension/panel.js",
-        group="G12 (delete bypasses confirm gate, AC-45 -> AC-40 must go red)",
-        old='    actionsTd.appendChild(makeButton("delete", () => confirmDeleteJob(j)));\n',
+        group="G12 (delete fires before the confirm dialog opens -- cosmetic dialog, AC-45 -> AC-40 must go red)",
+        old=(
+            "function confirmDeleteJob(job) {\n"
+            "  openConfirm({\n"
+        ),
         new=(
-            '    actionsTd.appendChild(makeButton("delete", () => '
-            "postJson(`${base()}${API_JOBS_DELETE}`, { id: j.id })));  // BUG: bypasses confirm\n"
+            "function confirmDeleteJob(job) {\n"
+            "  postJson(`${base()}${API_JOBS_DELETE}`, { id: job.id });  // BUG: fires immediately, dialog is cosmetic\n"
+            "  openConfirm({\n"
         ),
     ),
     dict(
