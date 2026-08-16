@@ -1876,6 +1876,31 @@ def _extract_js_function(source: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces extracting function {name}()")
 
 
+def _extract_onconfirm_block(source: str) -> str:
+    """Return the full source of the `onConfirm: async () => { ... }`
+    property value inside `source` (a single function's body, typically
+    from _extract_js_function()), matched the same way -- brace-depth
+    counting from the `onConfirm:` marker's first `{` to its matching `}`.
+    This is what lets AC-40 tell "postJson is inside the confirm handler"
+    apart from "postJson is somewhere in this function" (2026-08-16, Dida's
+    verification: the latter stays green even when the confirm dialog is
+    cosmetic and the write already happened before it ever opened)."""
+    marker = "onConfirm:"
+    start = source.index(marker)
+    brace_start = source.index("{", start)
+    depth = 0
+    i = brace_start
+    while i < len(source):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : i + 1]
+        i += 1
+    raise AssertionError("unbalanced braces extracting onConfirm: block")
+
+
 def _git_env():
     """git, like node/npm, is not on the hermetic FAKE_DIR-only PATH this
     file wraps the whole suite in -- it never touches iTerm2/osascript/ps,
@@ -2166,18 +2191,38 @@ class G12ChromeExtension(unittest.TestCase):
             f"extension_job_plan_driver.mjs failed:\nstdout={proc.stdout}\nstderr={proc.stderr}",
         )
 
+    # AC-40's real property is "the postJson call is reachable only from the
+    # user's Confirm click" -- NOT "postJson appears somewhere in the
+    # function that also happens to open a confirm dialog." The former is
+    # what makes a cosmetic dialog (one that still renders, but whose
+    # underlying action already fired before the user ever saw it) a caught
+    # regression; the latter is not, which is exactly what Dida's 2026-08-16
+    # verification demonstrated concretely against both confirmRunJob() and
+    # confirmDeleteJob() (full 122-test suite stayed green both times). This
+    # version checks that postJson does NOT appear anywhere in the function
+    # OUTSIDE the onConfirm: block specifically -- so a postJson call fired
+    # before openConfirm() is invoked (dialog still shown, action already
+    # done) fails it, not just a postJson call wired straight to a row's own
+    # click handler (which the renderJobs() check below still also catches).
     def test_ac40_destructive_actions_confirm_gated(self):
         html = _read_extension_file("panel.html")
         self.assertIn('<dialog id="confirmDialog">', html)
         panel = _read_extension_file("panel.js")
         render_jobs = _extract_js_function(panel, "renderJobs")
         self.assertNotIn("postJson", render_jobs, "renderJobs()'s row-click wiring must never call postJson directly")
-        confirm_run = _extract_js_function(panel, "confirmRunJob")
-        self.assertIn("API_JOBS_RUN", confirm_run)
-        self.assertIn("postJson", confirm_run)
-        confirm_delete = _extract_js_function(panel, "confirmDeleteJob")
-        self.assertIn("API_JOBS_DELETE", confirm_delete)
-        self.assertIn("postJson", confirm_delete)
+
+        for fn_name, const_name in (("confirmRunJob", "API_JOBS_RUN"), ("confirmDeleteJob", "API_JOBS_DELETE")):
+            fn_source = _extract_js_function(panel, fn_name)
+            onconfirm_block = _extract_onconfirm_block(fn_source)
+            outside_onconfirm = fn_source.replace(onconfirm_block, "", 1)
+            self.assertNotIn(
+                "postJson", outside_onconfirm,
+                f"{fn_name}() calls postJson outside its onConfirm handler -- "
+                "the confirm dialog would be cosmetic (the action already happened "
+                "before the user could Cancel it)",
+            )
+            self.assertIn(const_name, onconfirm_block, f"{fn_name}()'s onConfirm handler must reference {const_name}")
+            self.assertIn("postJson", onconfirm_block, f"{fn_name}()'s onConfirm handler must call postJson")
 
     def test_ac41_job_create_submit_defaults_off(self):
         html = _read_extension_file("panel.html")
