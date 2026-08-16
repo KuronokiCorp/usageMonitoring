@@ -11,6 +11,20 @@ reconstructed from git history for reference; they were not written at the time.
 
 ## [Unreleased]
 
+### Added
+- **A Chrome extension control panel + background notifier (BACKLOG #13),** living in the
+  new `extension/` directory. An MV3 service worker polls `/api/logs` and `/api/jobs` on a
+  timer (default 60s) and raises a desktop notification when a new error appears in the
+  activity log or a scheduled job silently misses its slot, with an unread count on the
+  toolbar badge — this works with the admin tab closed. A popup/tab panel lists sessions,
+  manages scheduled jobs (create, enable/disable, delete, run now), views the activity log,
+  and sends a one-off command to a chosen session, with every destructive or executing
+  action behind a confirmation step. No content scripts, no server code changes.
+  **`extension/` is not part of the npm package** — `package.json`'s `files` array is
+  unchanged and the published tarball is unaffected. Load it unpacked (see
+  `extension/README.md`); it also requires a one-time itermon restart with
+  `--allow-origin chrome-extension://<id>` before it can reach the local admin API.
+
 ### Security
 - **Closed a remote-code-execution hole in the web admin's API (BACKLOG #12).** Before this
   fix, `iterm_web.py` served `/api/send` (and every other `/api/*` route) with no `Origin`
