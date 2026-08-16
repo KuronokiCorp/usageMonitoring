@@ -242,6 +242,106 @@ MUTATIONS = [
             "            reason = \"Host not allowlisted\"\n"
         ),
     ),
+    # ----------------------------------------------------------------- #
+    # M11-M18: BACKLOG #13, spec docs/specs/chrome-extension-control-panel.md
+    # (G12ChromeExtension in tests/run_tests.py). _fresh_copy() below is
+    # extended to also copy extension/ so these mutations have somewhere to
+    # land.
+    # ----------------------------------------------------------------- #
+    dict(
+        id="M11",
+        file="extension/manifest.json",
+        group="G12 (permission set widened, AC-25 -> AC-8 must go red)",
+        old='  "permissions": ["alarms", "notifications", "storage"],\n',
+        new='  "permissions": ["alarms", "notifications", "storage", "tabs"],\n',
+    ),
+    dict(
+        id="M12",
+        file="extension/background.js",
+        group="G12 (#11 guard neutered, AC-26 -> AC-14 must go red)",
+        old=(
+            "export async function pollTick(base, { fetchImpl, timeoutMs = FETCH_TIMEOUT_MS } = {}) {\n"
+            "  const logs = await getJson(`${base}/api/logs`, { timeoutMs, fetchImpl });\n"
+            "  const jobs = await getJson(`${base}/api/jobs`, { timeoutMs, fetchImpl });\n"
+            "  return { logs, jobs };\n"
+            "}\n"
+        ),
+        new=(
+            "export async function pollTick(base, { fetchImpl, timeoutMs = FETCH_TIMEOUT_MS } = {}) {\n"
+            "  const logs = await getJson(`${base}/api/logs`, { timeoutMs, fetchImpl });\n"
+            "  const jobs = await getJson(`${base}/api/jobs`, { timeoutMs, fetchImpl });\n"
+            "  await getJson(`${base}/api/sessions`, { timeoutMs, fetchImpl });  // BUG: injected\n"
+            "  return { logs, jobs };\n"
+            "}\n"
+        ),
+    ),
+    dict(
+        id="M13",
+        file="extension/panel.js",
+        group="G12 (__all__ guard neutered, AC-27 -> AC-19 must go red)",
+        old="const $ = (id) => document.getElementById(id);\n",
+        new=(
+            "const $ = (id) => document.getElementById(id);\n"
+            'const NEVER_USE_ALL = "__all__"; // BUG: injected for mutation testing\n'
+        ),
+    ),
+    dict(
+        id="M14",
+        file="extension/panel.html",
+        group="G12 (submit default neutered, AC-28 -> AC-17 must go red)",
+        old='        <input type="checkbox" id="sendSubmit">\n',
+        new='        <input type="checkbox" id="sendSubmit" checked>\n',
+    ),
+    dict(
+        id="M15",
+        file="package.json",
+        group="G12 (packaging guard neutered, AC-29 -> AC-2 must go red)",
+        old=(
+            '  "files": [\n'
+            '    "iterm_ctl.py",\n'
+            '    "iterm_web.py",\n'
+            '    "iterm_mcp.py",\n'
+            '    "start.sh",\n'
+            '    "README.md",\n'
+            '    "LICENSE"\n'
+            "  ],\n"
+        ),
+        new=(
+            '  "files": [\n'
+            '    "iterm_ctl.py",\n'
+            '    "iterm_web.py",\n'
+            '    "iterm_mcp.py",\n'
+            '    "start.sh",\n'
+            '    "README.md",\n'
+            '    "LICENSE",\n'
+            '    "extension"\n'
+            "  ],\n"
+        ),
+    ),
+    dict(
+        id="M16",
+        file="extension/panel.js",
+        group="G12 (create-path target prefix index: -> id:, AC-44 -> AC-38 must go red)",
+        old='    ? sessions.map((s) => ({ value: `index:${s.index}`, label: `${s.index}  ${s.job || ""}  ${s.name}` }))\n',
+        new='    ? sessions.map((s) => ({ value: `id:${s.index}`, label: `${s.index}  ${s.job || ""}  ${s.name}` }))\n',
+    ),
+    dict(
+        id="M17",
+        file="extension/panel.js",
+        group="G12 (delete bypasses confirm gate, AC-45 -> AC-40 must go red)",
+        old='    actionsTd.appendChild(makeButton("delete", () => confirmDeleteJob(j)));\n',
+        new=(
+            '    actionsTd.appendChild(makeButton("delete", () => '
+            "postJson(`${base()}${API_JOBS_DELETE}`, { id: j.id })));  // BUG: bypasses confirm\n"
+        ),
+    ),
+    dict(
+        id="M18",
+        file="extension/panel.js",
+        group="G12 (job creation switched to single-create endpoint, AC-46 -> AC-37 and AC-42 must go red)",
+        old='const API_JOBS_CREATE_BULK = "/api/jobs/create_bulk";\n',
+        new='const API_JOBS_CREATE_BULK = "/api/jobs/create";  // BUG: no longer _bulk\n',
+    ),
 ]
 
 
@@ -255,7 +355,15 @@ def _fresh_copy() -> str:
     README.md, and CHANGELOG.md are copied read-only (as of
     docs/specs/admin-api-origin-hardening.md's G11 AC-14/AC-D1/AC-D2 tests,
     which read them directly and would otherwise fail on a baseline copy for
-    a reason unrelated to any mutation); plus the tests/ directory itself."""
+    a reason unrelated to any mutation); the extension/ tree (as of
+    docs/specs/chrome-extension-control-panel.md's G12 tests, BACKLOG #13 --
+    M11-M18 mutate files under here); plus the tests/ directory itself.
+
+    This copy deliberately has NO .git directory -- G12's AC-3/AC-4 (which
+    shell out to `git merge-base`/`git diff`) are written to skip cleanly
+    when they are not inside a git work-tree, precisely so a baseline run
+    against this copy doesn't go red for a reason unrelated to any
+    mutation."""
     tmp = tempfile.mkdtemp(prefix="itermon-counter-test-")
     for name in (
         "iterm_ctl.py", "iterm_mcp.py", "iterm_web.py", "start.sh",
@@ -264,6 +372,9 @@ def _fresh_copy() -> str:
         src = os.path.join(REPO_ROOT, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(tmp, name))
+    ext_src = os.path.join(REPO_ROOT, "extension")
+    if os.path.isdir(ext_src):
+        shutil.copytree(ext_src, os.path.join(tmp, "extension"))
     shutil.copytree(os.path.join(REPO_ROOT, "tests"), os.path.join(tmp, "tests"))
     return tmp
 
