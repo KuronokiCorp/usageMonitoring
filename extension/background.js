@@ -76,7 +76,20 @@ async function updateBadge(state) {
 
 let ticking = false; // re-entrancy guard (spec 5.1: "must be safe to run concurrently with itself")
 
-async function tick() {
+/**
+ * tick(opts) -- exported, and its fetch boundary is injectable (`opts.
+ * fetchImpl`, threaded straight into pollTick()) for the same reason
+ * pollTick() itself is: it lets the 403-pause/backoff/notify/badge logic in
+ * this function and handleTickFailure() below be driven deterministically
+ * under plain node (tests/extension_background_poll_driver.mjs), against a
+ * fake in-memory chrome.storage/alarms/notifications/action, rather than
+ * being reachable only through a real browser. Real call sites (the
+ * chrome.alarms.onAlarm listener below, handleResume()) call tick() with no
+ * opts, so `fetchImpl` stays undefined and pollTick() falls back to the
+ * global fetch exactly as before this parameter existed -- no behavior
+ * change to the shipped logic.
+ */
+export async function tick({ fetchImpl } = {}) {
   if (ticking) return;
   ticking = true;
   try {
@@ -87,7 +100,7 @@ async function tick() {
     const base = baseUrl(settings);
     let logs, jobs;
     try {
-      ({ logs, jobs } = await pollTick(base, { timeoutMs: FETCH_TIMEOUT_MS }));
+      ({ logs, jobs } = await pollTick(base, { timeoutMs: FETCH_TIMEOUT_MS, fetchImpl }));
     } catch (err) {
       await handleTickFailure(err, settings, state);
       return;
@@ -168,8 +181,11 @@ async function handleAck() {
 
 /** Called after the panel saves settings, or presses Retry (spec 7.1 /
  * 5.6): clear paused/backoff, re-create the alarm at the (possibly new)
- * period, and poll immediately so feedback arrives within a second. */
-async function handleResume() {
+ * period, and poll immediately so feedback arrives within a second.
+ * Exported, and `opts.fetchImpl` forwards to the immediate tick() the same
+ * way tick()'s own fetchImpl does, for the same node-driver reason -- the
+ * real onMessage listener below calls this with no opts, unchanged. */
+export async function handleResume({ fetchImpl } = {}) {
   const settings = await loadSettings();
   const state = await loadState();
   state.paused = false;
@@ -177,7 +193,7 @@ async function handleResume() {
   state.backoffMs = 0;
   await saveState(state);
   await ensureAlarm(settings.pollSeconds);
-  await tick();
+  await tick({ fetchImpl });
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.alarms) {
