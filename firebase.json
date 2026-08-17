@@ -5,7 +5,23 @@
     "ignore": [
       "firebase.json",
       "**/.*",
-      "**/node_modules/**"
+      "**/node_modules/**",
+      "worklog/**",
+      "**/worklog/**",
+      "briefs/**",
+      "**/briefs/**",
+      "dispatches/**",
+      "**/dispatches/**",
+      "distribution/**",
+      "**/distribution/**",
+      "kpi-reviews/**",
+      "**/kpi-reviews/**",
+      "verification/**",
+      "**/verification/**",
+      "spikes/**",
+      "**/spikes/**",
+      "records-remote.md",
+      "**/records-remote.md"
     ],
     "cleanUrls": true
   }

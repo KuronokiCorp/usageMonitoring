@@ -245,8 +245,9 @@
       <nav class="nav-links" aria-label="Primary">
         <a class="nav-item" href="#features"><span class="nav-index">01 /</span><span class="nav-label nav-link-underline">Features</span></a>
         <a class="nav-item" href="#admin"><span class="nav-index">02 /</span><span class="nav-label nav-link-underline">Web&nbsp;Admin</span></a>
-        <a class="nav-item" href="#install"><span class="nav-index">03 /</span><span class="nav-label nav-link-underline">Install</span></a>
-        <a class="nav-item" href="https://github.com/KuronokiCorp/usageMonitoring"><span class="nav-index">04 /</span><span class="nav-label nav-link-underline">GitHub</span></a>
+        <a class="nav-item" href="#extension"><span class="nav-index">03 /</span><span class="nav-label nav-link-underline">Extension</span></a>
+        <a class="nav-item" href="#install"><span class="nav-index">04 /</span><span class="nav-label nav-link-underline">Install</span></a>
+        <a class="nav-item" href="https://github.com/KuronokiCorp/usageMonitoring"><span class="nav-index">05 /</span><span class="nav-label nav-link-underline">GitHub</span></a>
       </nav>
       <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="mobileNav">Menu</button>
       <div class="nav-meta">
@@ -259,6 +260,7 @@
         <nav aria-label="Mobile">
           <a href="#features">Features</a>
           <a href="#admin">Web Admin</a>
+          <a href="#extension">Extension</a>
           <a href="#install">Install</a>
           <a href="https://github.com/KuronokiCorp/usageMonitoring">GitHub</a>
         </nav>
@@ -329,9 +331,31 @@
     </div>
   </section>
 
+  <section class="block" id="extension" aria-label="Chrome extension">
+    <div class="container">
+      <div class="block-head"><span class="idx">03 /</span><h2>Chrome Extension</h2></div>
+      <ul class="feature-list">
+        <li><span class="idx">01</span><h3>Alerts</h3><p>A desktop notification the moment a scheduled send fails or a job misses its slot — with no tab open. The failure finds you instead of waiting in a log.</p></li>
+        <li><span class="idx">02</span><h3>Control Panel</h3><p>Sessions and jobs in the toolbar popup — create, enable, run, and delete scheduled commands, or send one to a single session.</p></li>
+        <li><span class="idx">03</span><h3>Activity Log</h3><p>The same live feed as the web admin, with failed deliveries shown as failures rather than a quiet nothing.</p></li>
+        <li><span class="idx">04</span><h3>Local Only</h3><p>Talks to 127.0.0.1 and nothing else. No content scripts, no account, no analytics, no data collected.</p></li>
+      </ul>
+      <div class="install-grid">
+        <div class="install-card">
+          <h3>How it works</h3>
+          <p class="install-note">It is a front end for the itermon server you already run locally — start <code>iterm-admin</code> and the extension finds it. Alerts work the moment it is installed; the panel&rsquo;s control actions ask itermon to allow the extension once, and it shows you the exact one-line command.</p>
+        </div>
+        <div class="install-card">
+          <h3>Availability</h3>
+          <p class="install-note">Chrome extension &mdash; Web Store listing coming soon. Until then the source lives in the <a class="nav-link-underline" href="https://github.com/KuronokiCorp/usageMonitoring/tree/develop/extension">extension/ directory</a> on GitHub and can be loaded unpacked via Developer Mode.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="block" id="install" aria-label="Install">
     <div class="container">
-      <div class="block-head"><span class="idx">03 /</span><h2>Install</h2></div>
+      <div class="block-head"><span class="idx">04 /</span><h2>Install</h2></div>
       <div class="install-grid">
         <div class="install-card">
           <h3>From npm</h3>
@@ -359,6 +383,7 @@
       <a class="nav-link-underline" href="https://www.npmjs.com/package/itermon">npm</a>
       <a class="nav-link-underline" href="https://github.com/KuronokiCorp/usageMonitoring">GitHub</a>
       <a class="nav-link-underline" href="https://github.com/KuronokiCorp/usageMonitoring/blob/main/LICENSE">MIT License</a>
+      <a class="nav-link-underline" href="https://vectech.co/itermon/privacy.html">Privacy</a>
       <a class="nav-link-underline" href="https://www.buymeacoffee.com/vectechlimited">Buy&nbsp;Me&nbsp;a&nbsp;Coffee</a>
     </nav>
     <span class="muted">macOS · iTerm2 · Python 3</span>

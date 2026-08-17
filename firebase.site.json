@@ -1,0 +1,13 @@
+{
+  "hosting": {
+    "target": "itermon",
+    "public": "site-build",
+    "ignore": [
+      "firebase.json",
+      "firebase.site.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "cleanUrls": true
+  }
+}

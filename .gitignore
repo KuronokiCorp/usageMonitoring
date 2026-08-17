@@ -29,3 +29,7 @@ venv/
 # file outlives the rule meant to cover it and one `git add -A` commits it. This line is on
 # every branch that carries this file, which is the point.
 .specify/feature.json
+
+# staging dir built by deploy-site.sh (never committed, never deployed from docs/)
+site-build/
+firebase-debug.log
