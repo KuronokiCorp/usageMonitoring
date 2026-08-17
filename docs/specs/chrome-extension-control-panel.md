@@ -860,3 +860,75 @@ Beyond the normal standard, the three things I most want a second pair of eyes o
   extension strictly cheaper than the tab it replaces (§5.8), but only if the tab actually gets
   closed. If it ships and people keep the admin tab open anyway, it has not helped #11 — worth
   measuring after it is in use rather than assuming.
+
+---
+
+## 14. Errata — 2026-08-17, after the ten real-Chrome ACs were executed
+
+The ten interactive ACs excluded at merge (AC-31…36, AC-47…50) were executed on 2026-08-17 under
+CEO rule-16 **Q1 = A** and **all ten passed**. Evidence:
+`docs/verification/2026-08-17-chrome-extension-real-chrome/` (26-step JSON log + 6 screenshots).
+**No code was changed to make them pass** — merge `b1da566` stands as gated.
+
+Executing them proved three statements in this spec wrong. They are corrected here rather than
+silently, because a spec that is quietly wrong is worse than one that is openly amended — and
+because the last time I fixed a defect in this document without checking what had been built from
+it, the broken version had already shipped into the code (the NUL-byte incident, see §14.1 E2's
+sibling in the 2026-08-17 worklog).
+
+### E1 — Chromium sends **no `Origin`** on an extension's GET fetches; its POSTs **do**
+
+Empirically confirmed. Fetches issued by the service worker/panel to a `host_permissions` host
+arrive at the server with **no `Origin` header** for GETs, so they pass BACKLOG #12's guard through
+the same "no Origin = a script, not a browser page" branch that `curl` uses. **POSTs do carry
+`Origin`** and are correctly 403'd until the operator allowlists the extension.
+
+Consequences, all of which *strengthen* rather than weaken the design:
+
+- **§1's "zero server changes" claim is now empirical, not theoretical, for the read path.** The
+  notifier core — the half with the unique value — works against a stock itermon with **no
+  configuration at all**.
+- **`--allow-origin` is required exactly for the write surface**, which is the correct place for a
+  configuration gate to sit: reading is free, driving your terminals is opt-in.
+- **#12's closure of the web-page drive-by is unaffected.** Pages always send `Origin`.
+- **Corollary, recorded rather than buried:** any Chrome extension holding `127.0.0.1` host
+  permission can *read* this API without the operator's involvement. That is the same class of
+  exposure as any local process on the machine — the API has never had authentication and this does
+  not change that — but it is a real, newly-evidenced surface and it belongs next to R4.
+
+### E2 — AC-31's literal premise is unreachable in current Chrome
+
+AC-31 as written assumes the extension's **background GETs** can draw a real 403 from the real
+guard. Per E1 they cannot. The forbidden state was therefore induced with a **403-returning stub on
+the same port**, and AC-32 then used the **real** server with the real `--allow-origin` flag, where
+the write surface makes the guard meaningful.
+
+**Ruling: PASS stands, deviation recorded.** What AC-31 exists to prove is that the extension
+*surfaces the not-allowlisted state legibly and stops hammering the server* — and that was proven
+exactly as specified (banner text, exact copy-ready command with the real ID, badge `!`, exactly one
+notification, alarms cleared, **zero further requests over 130 s**). **Corrected AC-31 text:** the
+forbidden state may be induced either on the write path against the real guard or with a
+403-returning stub; the assertions are unchanged.
+
+### E3 — "no trailing Enter" in AC-36/AC-50 was wrong about the server's own contract
+
+`iterm_web.do_send()` always calls `send_text(s, command, enter=True)` — the command line **always**
+ends with a newline, because the command must actually run — and `submit: true` adds an **extra bare
+Enter** (`send_text(s, "", enter=True)`), which is what Claude Code's TUI needs to send a drafted
+message. My AC text said a submit-off send produces "no trailing Enter", which describes a server
+that does not exist.
+
+**Corrected AC-36/AC-50 text:** submit-off produces exactly one text send **and no extra bare-Enter
+send**; submit-on produces the text send **plus exactly one** bare-Enter send. This is what was
+actually asserted, against the fake `osascript` record. **My error, in my spec** — the
+implementation was right throughout.
+
+### E4 — v1.1 item: the panel keeps polling while in the forbidden state
+
+Observed, not AC-covered: with the panel **open** and the server rejecting it, the panel continues
+its ~10 s visible-UI polling. §5.6's pause governs the **background worker** only.
+
+Impact is bounded — the server rate-limits rejection logging to one entry per 60 s with a suppressed
+count (#12 §4.3), so this is log noise, not the disk-growth risk that made the worker's pause
+mandatory. **Not a merge blocker; logged as a v1.1 item:** apply the same pause/backoff to the
+panel's own polling once it has seen a 403.
